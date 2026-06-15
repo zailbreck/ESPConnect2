@@ -472,6 +472,9 @@ int mercury_login5(mercury_session_t *s,
 
     pb_buf_t ch_proto;
     build_client_hello(&ch_proto, s->dh_public, 96, nonce, 16);
+    fprintf(stderr, "[%s] ClientHello proto sz=%zu hex=", TAG, ch_proto.size);
+    for (size_t i = 0; i < ch_proto.size && i < 80; i++) fprintf(stderr, "%02x", ch_proto.data[i]);
+    fprintf(stderr, "\n");
 
     uint8_t hello_pkt[512];
     size_t hello_pkt_len = 0;
@@ -539,6 +542,16 @@ int mercury_login5(mercury_session_t *s,
 
     /* ---------- HMAC challenge ---------- */
     /* KEY: uses ch_proto ONLY (no prefix/len header), matches standalone cb.insert(ch.begin(),ch.end()) */
+    fprintf(stderr, "[%s] DBG cb=(ch_proto=%zu + ar_buf=%zu)\n", TAG, ch_proto.size, ar_len);
+    fprintf(stderr, "[%s] DBG ch_proto hex=", TAG);
+    for (size_t i = 0; i < ch_proto.size && i < 80; i++) fprintf(stderr, "%02x", ch_proto.data[i]);
+    fprintf(stderr, "\n");
+    fprintf(stderr, "[%s] DBG ar_buf hex=", TAG);
+    for (size_t i = 0; i < ar_len && i < 80; i++) fprintf(stderr, "%02x", ar_buf[i]);
+    fprintf(stderr, "\n");
+    fprintf(stderr, "[%s] DBG shared_key hex=", TAG);
+    for (int i = 0; i < 16; i++) fprintf(stderr, "%02x", s->shared_key[i]);
+    fprintf(stderr, "\n");
     uint8_t challenge[100];
     compute_auth_challenge(s->shared_key, 96,
                            ch_proto.data, ch_proto.size,  /* proto only, NOT wire packet */
