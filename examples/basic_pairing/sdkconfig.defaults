@@ -1,0 +1,9 @@
+# ESP-Spotify-Connect basic_pairing example defaults
+
+# WiFi (override with idf.py menuconfig)
+# CONFIG_EXAMPLE_WIFI_SSID="YOUR_WIFI_SSID"
+# CONFIG_EXAMPLE_WIFI_PASSWORD="YOUR_WIFI_PASSWORD"
+
+# Enable required components
+CONFIG_MBEDTLS=y
+CONFIG_MBEDTLS_HKDF_C=n
