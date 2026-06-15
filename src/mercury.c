@@ -616,7 +616,7 @@ int mercury_login5(mercury_session_t *s,
     /* ---------- Init Shannon ---------- */
     shannon_init(s->send_cipher, s->recv_cipher, send_key, recv_key);
     s->send_nonce = 0;
-    s->recv_nonce = 1;   /* Matches standalone: rcv.nonce(htonl(1)), rn=1 */
+    s->recv_nonce = 0;   /* Matches cspot wrapConnection htonl(0) */
     fprintf(stderr, "[%s] Shannon ready\n", TAG);
     fprintf(stderr, "[%s] KEYS sk=", TAG);
     for (int ki = 0; ki < 32; ki++) fprintf(stderr, "%02x", send_key[ki]);
