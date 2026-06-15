@@ -1,22 +1,27 @@
 // mercury.h — Spotify Mercury Protocol Interface
 // ================================================
 // Mercury is Spotify's pub/sub messaging protocol over the AP connection.
-// Used for AudioKey requests, track metadata, and control messages.
+// This module provides Login5 authentication (DH + HMAC challenge + Shannon
+// cipher) and Mercury message send/receive.
 //
 // Sources & References:
-//   Mercury protocol:  librespot (MIT) — core/src/mercury/
-//                      https://github.com/librespot-org/librespot/tree/dev/core/src/mercury
-//   Packet constants:  cspot (MIT) — MercurySession.cpp
-//                      https://github.com/feelfreelinux/cspot/blob/master/cspot/src/MercurySession.cpp
-//   Method types:      librespot (MIT) — mercury/mod.rs
+//   Shannon cipher:      cspot (MIT) — Shannon.cpp / Shannon.h
+//                        https://github.com/feelfreelinux/cspot/tree/master/cspot/src
+//   Shannon connection:  cspot (MIT) — ShannonConnection.cpp
+//   HMAC challenge:      librespot (MIT) — auth_challenge.rs
+//   DH group:            RFC 2409 — Oakley Group 2 (768-bit MODP)
+//   Protobuf schema:     cspot (MIT) — keyexchange.proto
+//   Login5 flow:         librespot (MIT) — authentication/login5.rs
+//   Mercury protocol:    librespot (MIT) — core/src/mercury/
 //
-// License: MIT — derived from librespot & cspot
+// License: MIT — derived from cspot & librespot
 
 #ifndef SPOTIFY_MERCURY_H
 #define SPOTIFY_MERCURY_H
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -25,25 +30,32 @@ extern "C" {
 /**
  * @brief Mercury protocol constants
  */
-#define MERCURY_PACKET_FLAG_SEQ     0x04  /**< Packet has sequence number */
-#define MERCURY_PACKET_FLAG_HEADER  0x10  /**< Packet has header (Mercury request/response) */
+#define MERCURY_PACKET_FLAG_SEQ     0x04
+#define MERCURY_PACKET_FLAG_HEADER  0x10
 
 /**
  * @brief Mercury method types
  */
 typedef enum {
-    MERCURY_METHOD_NONE = 0,
-    MERCURY_METHOD_SEND = 0x04,
-    MERCURY_METHOD_SUB  = 0x09,
+    MERCURY_METHOD_NONE  = 0,
+    MERCURY_METHOD_SEND  = 0x04,
+    MERCURY_METHOD_SUB   = 0x09,
     MERCURY_METHOD_UNSUB = 0x0a,
-    MERCURY_METHOD_REQ  = 0x0b,    /**< Mercury request */
-    MERCURY_METHOD_REPLY = 0x0c,   /**< Mercury reply */
+    MERCURY_METHOD_REQ   = 0x0b,
+    MERCURY_METHOD_REPLY = 0x0c,
 } mercury_method_t;
 
 /**
- * @brief Mercury callback type
+ * @brief Shannon connection command bytes (from cspot)
  */
-typedef void (*mercury_callback_t)(int status, const uint8_t *data, size_t len, void *userdata);
+#define MERCURY_CMD_LOGIN     0xAB
+#define MERCURY_CMD_AUTH_OK   0xAC
+#define MERCURY_CMD_AUTH_FAIL 0xAD
+
+/**
+ * @brief Opaque handle for Mercury session
+ */
+typedef struct mercury_session_t mercury_session_t;
 
 /**
  * @brief Mercury request structure
@@ -53,80 +65,119 @@ typedef struct {
     const char *uri;
     const uint8_t *payload;
     size_t payload_len;
-    mercury_callback_t callback;
-    void *callback_userdata;
 } mercury_request_t;
 
 /**
- * @brief Mercury session handle
- */
-typedef struct mercury_session_t mercury_session_t;
-
-/**
- * @brief Callback when Mercury connection state changes
+ * @brief Callback for state changes
  */
 typedef void (*mercury_state_callback_t)(int connected, void *userdata);
 
-/**
- * @brief Initialize Mercury session
- *
- * @param device_id Unique device identifier
- * @param username Spotify username
- * @param auth_data Stored credential bytes from login5
- * @param state_cb Optional state change callback
- * @param state_cb_userdata User data for callback
- * @return Mercury session handle, NULL on error
- */
-mercury_session_t *mercury_init(const char *device_id, const char *username,
-                                const uint8_t *auth_data, size_t auth_data_len,
-                                mercury_state_callback_t state_cb, void *state_cb_userdata);
+/* ======== Login5 Authentication API ======== */
 
 /**
- * @brief Connect to Spotify access point
+ * @brief Initialize a Mercury session.
  *
- * Resolves AP address via apresolve.spotify.com, then performs
- * Diffie-Hellman handshake + Mercury session setup.
+ * The session is created in an unconnected state.
  *
- * @param session Mercury session handle from mercury_init
+ * @return Session handle, NULL on error
+ */
+mercury_session_t *mercury_init(void);
+
+/**
+ * @brief Perform full Login5 authentication to Spotify AP.
+ *
+ * Flow:
+ *   1. TCP connect to AP
+ *   2. DH key exchange (Oakley Group 2)
+ *   3. ClientHello → APResponse
+ *   4. 5-round HMAC-SHA1 challenge
+ *   5. Shannon cipher initialization
+ *   6. ClientResponse → server
+ *   7. LoginRequest → APWelcome (or AUTH_FAIL)
+ *
+ * On success, the session is fully authenticated and ready for
+ * Mercury messaging. The reusable token is automatically extracted
+ * from APWelcome and stored internally.
+ *
+ * @param session       Session from mercury_init()
+ * @param username      Spotify username
+ * @param auth_data_b64 AuthData as base64 string (from zeroconf)
+ * @param auth_type     Auth type (from zeroconf, typically 1)
+ * @param device_id     32-char hex device ID string
+ * @param ap_host       Spotify AP hostname (e.g., "ap-gae2.spotify.com")
+ * @param ap_port       AP port (default: 443)
  * @return 0 on success, negative on error
  */
-int mercury_connect(mercury_session_t *session);
+int mercury_login5(mercury_session_t *session,
+                   const char *username,
+                   const char *auth_data_b64,
+                   int auth_type,
+                   const char *device_id,
+                   const char *ap_host,
+                   int ap_port);
 
 /**
- * @brief Send a Mercury request
+ * @brief Send a Shannon-encrypted packet on the Mercury connection.
  *
- * @param session Mercury session
- * @param request Mercury request (URI, payload, callback)
+ * @param session Session handle
+ * @param cmd     Command byte (MERCURY_CMD_LOGIN, etc.)
+ * @param data    Payload data
+ * @param len     Payload length
  * @return 0 on success, negative on error
  */
-int mercury_request(mercury_session_t *session, const mercury_request_t *request);
+int mercury_send(mercury_session_t *session, uint8_t cmd,
+                 const uint8_t *data, size_t len);
 
 /**
- * @brief Subscribe to a Mercury URI
+ * @brief Receive a Shannon-encrypted packet.
  *
- * @param session Mercury session
- * @param uri URI to subscribe to (e.g., "hm://...").
- * @return 0 on success, negative on error
+ * @param session  Session handle
+ * @param cmd      Output command byte
+ * @param data     Output buffer for payload
+ * @param len      Input: buffer capacity; Output: received length
+ * @param max_len  Maximum capacity of data buffer
+ * @return 0 on success, -1 on error, 1 on timeout
  */
-int mercury_subscribe(mercury_session_t *session, const char *uri);
+int mercury_recv(mercury_session_t *session, uint8_t *cmd,
+                 uint8_t *data, size_t *len, size_t max_len);
+
+/* ======== Post-Auth Info ======== */
 
 /**
- * @brief Poll Mercury for incoming messages
- * Must be called periodically to process incoming data.
+ * @brief Get the canonical username from APWelcome.
  *
- * @param session Mercury session
- * @param timeout_ms Timeout in milliseconds (0 = non-blocking)
- * @return 0 on success, 1 on timeout, negative on error
+ * Only valid after successful mercury_login5().
+ *
+ * @return Canonical username string (owned by session), or NULL
  */
-int mercury_poll(mercury_session_t *session, int timeout_ms);
+const char *mercury_get_canonical_username(mercury_session_t *session);
 
 /**
- * @brief Close Mercury session
+ * @brief Get the reusable stored credential token.
+ *
+ * This token can be saved and reused for future logins
+ * (auth_type = 1). Only valid after successful mercury_login5().
+ *
+ * @param session Session handle
+ * @param out_len Output: length of stored credential
+ * @return Pointer to stored credential bytes (owned by session), or NULL
+ */
+const uint8_t *mercury_get_stored_cred(mercury_session_t *session, size_t *out_len);
+
+/* ======== Connection Management ======== */
+
+/**
+ * @brief Check if the session is connected and authenticated.
+ */
+bool mercury_is_connected(mercury_session_t *session);
+
+/**
+ * @brief Disconnect from AP and free network resources.
  */
 void mercury_disconnect(mercury_session_t *session);
 
 /**
- * @brief Destroy Mercury session and free resources
+ * @brief Destroy session and free all resources.
  */
 void mercury_destroy(mercury_session_t *session);
 

@@ -30,8 +30,12 @@ typedef struct {
     const char *client_id;      /**< Spotify App Client ID */
     const char *client_secret;  /**< Spotify App Client Secret */
     const char *device_name;    /**< Name shown as Spotify device */
+    const char *device_id;      /**< 32-char hex device ID (for zeroconf+login5) */
     const char *username;       /**< Spotify username (for login5) */
     const char *password;       /**< Spotify password (for login5) */
+    const char *ap_host;        /**< Spotify AP host (default: ap-gae2.spotify.com) */
+    int ap_port;                /**< AP port (default: 443) */
+    int bell_port;              /**< Bell HTTP port for zeroconf (default: 7864) */
 } esp_spotify_config_t;
 
 /**
@@ -73,10 +77,36 @@ int esp_spotify_init(const esp_spotify_config_t *config, esp_spotify_handle_t *h
 /**
  * @brief Start Spotify Connect (login + become a device)
  *
+ * Starts OAuth2 token acquisition and ZeroConf pairing.
+ *
  * @param handle Session handle
  * @return 0 on success, negative on error
  */
 int esp_spotify_start(esp_spotify_handle_t handle);
+
+/**
+ * @brief Wait for ZeroConf pairing (Spotify app discovers this device).
+ *
+ * Blocks until credentials are captured from the Spotify app's
+ * "Connect to a device" flow, or until the timeout expires.
+ *
+ * @param handle Session handle
+ * @param timeout_seconds Maximum wait time (0 = indefinite)
+ * @return 0 if credentials captured, negative on error/timeout
+ */
+int esp_spotify_pair(esp_spotify_handle_t handle, int timeout_seconds);
+
+/**
+ * @brief Authenticate to Spotify AP using Login5.
+ *
+ * Requires credentials from esp_spotify_pair() to have been
+ * captured first. Performs DH handshake + HMAC challenge +
+ * Shannon cipher setup + LoginRequest.
+ *
+ * @param handle Session handle
+ * @return 0 on success (APWelcome received), negative on error
+ */
+int esp_spotify_login(esp_spotify_handle_t handle);
 
 /**
  * @brief Resolve CDN URL for a given file ID
