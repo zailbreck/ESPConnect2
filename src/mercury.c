@@ -563,7 +563,7 @@ int mercury_login5(mercury_session_t *s,
     fprintf(stderr, "\n");
     uint8_t challenge[100];
     compute_auth_challenge(s->shared_key, 96,
-                           ch_proto.data, ch_proto.size,  /* proto only, NOT wire packet */
+                           hello_pkt, hello_pkt_len,  /* FULL packet including prefix and size */
                            ar_buf, ar_len,     /* [4B len][ar_proto] */
                            challenge);
     /* Write full debug data to file for cross-verification */
