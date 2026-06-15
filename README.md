@@ -341,3 +341,20 @@ All MIT-licensed.
 ## License
 
 MIT — derived from [cspot](https://github.com/feelfreelinux/cspot) and [librespot](https://github.com/librespot-org/librespot), both MIT-licensed.
+
+## Windows Test Build
+
+Instructions to build the test Windows executable:
+
+```bash
+# Cross-compile for Windows on Linux using MinGW
+x86_64-w64-mingw32-gcc -std=gnu11 -O2 -static -DWIN32_LEAN_AND_MEAN -D_WIN32_WINNT=0x0600 \
+  -I include -I include/internal -I /tmp/mbedtls-3.5.0-mingw/include -I thirdparty \
+  src/mercury.c src/spclient.c src/zeroconf.c src/decrypt.c src/esp_spotify.c src/platform_windows.c test/x86/test_e2e.c \
+  thirdparty/mdns.c thirdparty/mdnsd.c \
+  /tmp/mbedtls-3.5.0-mingw/library/libmbedtls.a /tmp/mbedtls-3.5.0-mingw/library/libmbedx509.a /tmp/mbedtls-3.5.0-mingw/library/libmbedcrypto.a \
+  -lws2_32 -lpthread -lbcrypt -lshlwapi -liphlpapi -lm \
+  -o espconnect_e2e_v38.exe
+```
+
+This compiles a standalone `.exe` using `mbedtls` for cryptographic and TLS operations, and `winsock2` for network operations.

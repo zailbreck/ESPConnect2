@@ -223,25 +223,37 @@ static void build_client_hello(pb_buf_t *out,
 }
 
 /* ClientResponsePlaintext: matches librespot compute_keys + client_response */
+
+static void raw_pb_varint(pb_buf_t *b, uint32_t tag, uint64_t val) {
+    pb_grow(b, 20);
+    b->data[b->size++] = (uint8_t)tag;
+    b->size = pb_varint_enc(b->data + b->size, val) - b->data;
+}
+
+static void raw_pb_bytes(pb_buf_t *b, uint32_t tag, const uint8_t *d, size_t len) {
+    pb_grow(b, 10 + len);
+    b->data[b->size++] = (uint8_t)tag;
+    b->size = pb_varint_enc(b->data + b->size, len) - b->data;
+    if (len > 0) memcpy(b->data + b->size, d, len);
+    b->size += len;
+}
+
 static void build_client_resp(pb_buf_t *out, const uint8_t hmac[20]) {
-    /* Matches cspot standalone mkCR: flat structure, no double-nesting */
     pb_init(out, 128);
     pb_buf_t dh; pb_init(&dh, 32);
-    pb_bytes(&dh, 10, hmac, 20);
+    raw_pb_bytes(&dh, 0x0a, hmac, 20);
 
     pb_buf_t resp; pb_init(&resp, 64);
-    pb_bytes(&resp, 10, dh.data, dh.size);
+    raw_pb_bytes(&resp, 0x0a, dh.data, dh.size);
     pb_free(&dh);
 
-    /* ClientResponse = login_crypto_response + empty padding fields */
-    pb_bytes(out, 0x0a, resp.data, resp.size);
-    pb_bytes(out, 0x14, NULL, 0);
-    pb_bytes(out, 0x1e, NULL, 0);
+    raw_pb_bytes(out, 0x0a, resp.data, resp.size);
+    raw_pb_bytes(out, 0x14, (const uint8_t*)"", 0);
+    raw_pb_bytes(out, 0x1e, (const uint8_t*)"", 0);
 
     pb_free(&resp);
 }
 
-/* LoginRequest: matches cspot standalone mkLR exactly */
 static void build_login_request(pb_buf_t *out,
                                  const uint8_t *auth_data, size_t ad_len,
                                  int auth_type,
@@ -249,23 +261,20 @@ static void build_login_request(pb_buf_t *out,
                                  const char *device_id) {
     pb_init(out, 512);
 
-    /* login_credentials (field 0x0a=10) */
     pb_buf_t lc; pb_init(&lc, 256);
-    pb_bytes(&lc, 0x0a, (const uint8_t *)username, strlen(username));
-    pb_enum(&lc, 0x10, auth_type);
-    pb_bytes(&lc, 0x12, auth_data, ad_len);
-    pb_bytes(out, 0x0a, lc.data, lc.size);
+    raw_pb_bytes(&lc, 0x0a, (const uint8_t *)username, strlen(username));
+    raw_pb_varint(&lc, 0x10, auth_type);
+    raw_pb_bytes(&lc, 0x12, auth_data, ad_len);
+    raw_pb_bytes(out, 0x0a, lc.data, lc.size);
     pb_free(&lc);
 
-    /* system_info (field 0x14=20), cpu=2(CPU_X86), os=0(OS_UNKNOWN) */
     pb_buf_t si; pb_init(&si, 128);
-    pb_enum(&si, 0x0a, 2);
-    pb_enum(&si, 0x14, 0);
-    pb_bytes(out, 0x14, si.data, si.size);
+    raw_pb_varint(&si, 0x0a, 2);
+    raw_pb_varint(&si, 0x14, 0);
+    raw_pb_bytes(out, 0x14, si.data, si.size);
     pb_free(&si);
 
-    /* device_id (field 0x1e=30) — top-level, NOT inside system_info */
-    pb_bytes(out, 0x1e, (const uint8_t *)device_id, strlen(device_id));
+    raw_pb_bytes(out, 0x1e, (const uint8_t *)device_id, strlen(device_id));
 }
 
 /* ================================================================== */
