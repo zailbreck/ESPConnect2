@@ -631,11 +631,11 @@ void platform_shannon_decrypt(platform_shannon_t *s, uint8_t *buf, size_t nbytes
 /* Matches cspot standalone Shannon::finish(uint8_t mac[4]) exactly */
 void platform_shannon_finish(platform_shannon_t *s, uint8_t mac[4]) {
     if (s->nbuf) {
-        s->mbuf |= (s->nbuf < 32) ? 1 : 0;
         shannon_macfunc(s, s->mbuf);
     }
-    WORD2BYTE(s->CRC[0], mac);
-    s->initR[0] = s->sbuf;
+    shannon_cycle(s);
+    uint32_t t = s->CRC[0] ^ s->CRC[2] ^ s->CRC[15] ^ SHANNON_INITKONST;
+    WORD2BYTE(t, mac);
 }
 
 /* ================================================================== */

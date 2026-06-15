@@ -400,16 +400,8 @@ static inline uint32_t rotl32(uint32_t n, unsigned int c) {
     return (n << c) | (n >> (32 - c));
 }
 
-static inline uint32_t sbox1(uint32_t w) {
-    w ^= rotl32(w, 5) | rotl32(w, 7);
-    w ^= rotl32(w, 19) | rotl32(w, 22);
-    return w;
-}
-
-static inline uint32_t sbox2(uint32_t w) {
-    w ^= rotl32(w, 7) | rotl32(w, 22);
-    w ^= rotl32(w, 5) | rotl32(w, 19);
-    return w;
+static inline uint32_t sbox(uint32_t w) {
+    return w ^ rotl32(w, 5) ^ rotl32(w, 7) ^ rotl32(w, 19) ^ rotl32(w, 22);
 }
 
 #define BYTE2WORD(b) \
@@ -432,12 +424,12 @@ static inline uint32_t sbox2(uint32_t w) {
 
 static void shannon_cycle(platform_shannon_t *s) {
     uint32_t t = s->R[12] ^ s->R[13] ^ s->konst;
-    t = sbox1(t) ^ rotl32(s->R[0], 1);
+    t = sbox(t) ^ rotl32(s->R[0], 1);
     int i;
     for (i = 1; i < SHANNON_N; i++)
         s->R[i - 1] = s->R[i];
     s->R[SHANNON_N - 1] = t;
-    t = sbox2(s->R[2] ^ s->R[15]);
+    t = sbox(s->R[2] ^ s->R[15]);
     s->R[0] ^= t;
     s->sbuf = t ^ s->R[8] ^ s->R[12];
 }
@@ -480,7 +472,7 @@ static void shannon_diffuse(platform_shannon_t *s) {
         shannon_cycle(s);
 }
 
-#define ADDKEY(s, k) (s)->R[SHANNON_KEYP] ^= (k)
+#define ADDKEY(s, k) do { (s)->R[0] ^= (k); (s)->R[SHANNON_KEYP] ^= (k); (s)->sbuf = (k); } while(0)
 
 static void shannon_load_key(platform_shannon_t *s,
                               const uint8_t *key, size_t key_len) {
@@ -562,82 +554,92 @@ void platform_shannon_nonce(platform_shannon_t *s, const uint8_t *nonce, size_t 
 }
 
 void platform_shannon_encrypt(platform_shannon_t *s, uint8_t *buf, size_t nbytes) {
-    uint8_t *endbuf;
-    /* buffered bytes */
-    while (s->nbuf && nbytes) {
-        s->mbuf ^= (*buf) << (32 - s->nbuf);
-        *buf ^= (uint8_t)(s->sbuf >> (32 - s->nbuf));
-        buf++; s->nbuf -= 8; nbytes--;
+    size_t i = 0;
+    size_t n = nbytes;
+    if (s->nbuf != 0) {
+        while (s->nbuf != 0 && n != 0) {
+            s->mbuf ^= ((uint32_t)buf[i]) << (32 - s->nbuf);
+            buf[i] ^= (uint8_t)(s->sbuf >> (32 - s->nbuf));
+            i++;
+            s->nbuf -= 8;
+            n--;
+        }
+        if (s->nbuf != 0) return;
+        shannon_macfunc(s, s->mbuf);
     }
-    if (!s->nbuf && !nbytes) return;
-
-    /* whole words */
-    endbuf = &buf[nbytes & ~(size_t)3];
-    while (buf < endbuf) {
+    size_t words = n & ~(size_t)3;
+    size_t end_words = i + words;
+    while (i < end_words) {
         shannon_cycle(s);
-        uint32_t t = BYTE2WORD(buf);
+        uint32_t t = BYTE2WORD(&buf[i]);
         shannon_macfunc(s, t);
         t ^= s->sbuf;
-        WORD2BYTE(t, buf);
-        buf += 4;
+        WORD2BYTE(t, &buf[i]);
+        i += 4;
     }
-
-    /* trailing bytes */
-    nbytes &= 3;
-    if (nbytes) {
+    n &= 3;
+    if (n != 0) {
         shannon_cycle(s);
         s->mbuf = 0;
         s->nbuf = 32;
-        while (s->nbuf && nbytes) {
-            s->mbuf ^= (*buf) << (32 - s->nbuf);
-            *buf ^= (uint8_t)(s->sbuf >> (32 - s->nbuf));
-            buf++; s->nbuf -= 8; nbytes--;
+        while (s->nbuf != 0 && n != 0) {
+            s->mbuf ^= ((uint32_t)buf[i]) << (32 - s->nbuf);
+            buf[i] ^= (uint8_t)(s->sbuf >> (32 - s->nbuf));
+            i++;
+            s->nbuf -= 8;
+            n--;
         }
     }
 }
 
 void platform_shannon_decrypt(platform_shannon_t *s, uint8_t *buf, size_t nbytes) {
-    uint8_t *endbuf;
-    /* buffered bytes */
-    while (s->nbuf && nbytes) {
-        *buf ^= (uint8_t)(s->sbuf >> (32 - s->nbuf));
-        s->mbuf ^= (*buf) << (32 - s->nbuf);
-        buf++; s->nbuf -= 8; nbytes--;
+    size_t i = 0;
+    size_t n = nbytes;
+    if (s->nbuf != 0) {
+        while (s->nbuf != 0 && n != 0) {
+            uint8_t t = buf[i] ^ (uint8_t)(s->sbuf >> (32 - s->nbuf));
+            s->mbuf ^= ((uint32_t)buf[i]) << (32 - s->nbuf);
+            buf[i] = t;
+            i++;
+            s->nbuf -= 8;
+            n--;
+        }
+        if (s->nbuf != 0) return;
+        shannon_macfunc(s, s->mbuf);
     }
-    if (!s->nbuf && !nbytes) return;
-
-    /* whole words */
-    endbuf = &buf[nbytes & ~(size_t)3];
-    while (buf < endbuf) {
+    size_t words = n & ~(size_t)3;
+    size_t end_words = i + words;
+    while (i < end_words) {
         shannon_cycle(s);
-        uint32_t t = BYTE2WORD(buf) ^ s->sbuf;
+        uint32_t t = BYTE2WORD(&buf[i]);
+        t ^= s->sbuf;
         shannon_macfunc(s, t);
-        WORD2BYTE(t, buf);
-        buf += 4;
+        WORD2BYTE(t, &buf[i]);
+        i += 4;
     }
-
-    /* trailing bytes */
-    nbytes &= 3;
-    if (nbytes) {
+    n &= 3;
+    if (n != 0) {
         shannon_cycle(s);
         s->mbuf = 0;
         s->nbuf = 32;
-        while (s->nbuf && nbytes) {
-            *buf ^= (uint8_t)(s->sbuf >> (32 - s->nbuf));
-            s->mbuf ^= (*buf) << (32 - s->nbuf);
-            buf++; s->nbuf -= 8; nbytes--;
+        while (s->nbuf != 0 && n != 0) {
+            uint8_t t = buf[i] ^ (uint8_t)(s->sbuf >> (32 - s->nbuf));
+            s->mbuf ^= ((uint32_t)buf[i]) << (32 - s->nbuf);
+            buf[i] = t;
+            i++;
+            s->nbuf -= 8;
+            n--;
         }
     }
 }
 
-/* Matches cspot standalone Shannon::finish(uint8_t mac[4]) exactly */
 void platform_shannon_finish(platform_shannon_t *s, uint8_t mac[4]) {
     if (s->nbuf) {
-        s->mbuf |= (s->nbuf < 32) ? 1 : 0;
         shannon_macfunc(s, s->mbuf);
     }
-    WORD2BYTE(s->CRC[0], mac);
-    s->initR[0] = s->sbuf;
+    shannon_cycle(s);
+    uint32_t t = s->CRC[0] ^ s->CRC[2] ^ s->CRC[15] ^ SHANNON_INITKONST;
+    WORD2BYTE(t, mac);
 }
 
 /* ================================================================== */
