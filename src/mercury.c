@@ -238,18 +238,26 @@ static void raw_pb_bytes(pb_buf_t *b, uint32_t tag, const uint8_t *d, size_t len
     b->size += len;
 }
 
+static void pb_encode_varint(pb_buf_t *b, uint32_t field_num, uint64_t val) {
+    raw_pb_varint(b, (field_num << 3) | 0, val);
+}
+
+static void pb_encode_bytes(pb_buf_t *b, uint32_t field_num, const uint8_t *data, size_t len) {
+    raw_pb_bytes(b, (field_num << 3) | 2, data, len);
+}
+
 static void build_client_resp(pb_buf_t *out, const uint8_t hmac[20]) {
     pb_init(out, 128);
     pb_buf_t dh; pb_init(&dh, 32);
-    raw_pb_bytes(&dh, 0x0a, hmac, 20);
+    pb_encode_bytes(&dh, 1, hmac, 20);
 
     pb_buf_t resp; pb_init(&resp, 64);
-    raw_pb_bytes(&resp, 0x0a, dh.data, dh.size);
+    pb_encode_bytes(&resp, 1, dh.data, dh.size);
     pb_free(&dh);
 
-    raw_pb_bytes(out, 0x0a, resp.data, resp.size);
-    raw_pb_bytes(out, 0x14, (const uint8_t*)"", 0);
-    raw_pb_bytes(out, 0x1e, (const uint8_t*)"", 0);
+    pb_encode_bytes(out, 1, resp.data, resp.size);
+    pb_encode_bytes(out, 2, (const uint8_t*)"", 0);
+    pb_encode_bytes(out, 3, (const uint8_t*)"", 0);
 
     pb_free(&resp);
 }
@@ -262,19 +270,21 @@ static void build_login_request(pb_buf_t *out,
     pb_init(out, 512);
 
     pb_buf_t lc; pb_init(&lc, 256);
-    raw_pb_bytes(&lc, 0x0a, (const uint8_t *)username, strlen(username));
-    raw_pb_varint(&lc, 0x10, auth_type);
-    raw_pb_bytes(&lc, 0x12, auth_data, ad_len);
-    raw_pb_bytes(out, 0x0a, lc.data, lc.size);
+    pb_encode_bytes(&lc, 1, (const uint8_t *)username, strlen(username));
+    pb_encode_varint(&lc, 2, auth_type);
+    pb_encode_bytes(&lc, 3, auth_data, ad_len);
+    pb_encode_bytes(out, 1, lc.data, lc.size);
     pb_free(&lc);
 
     pb_buf_t si; pb_init(&si, 128);
-    raw_pb_varint(&si, 0x0a, 2);
-    raw_pb_varint(&si, 0x14, 0);
-    raw_pb_bytes(out, 0x14, si.data, si.size);
+    pb_encode_varint(&si, 1, 2);
+    pb_encode_varint(&si, 2, 0);
+    pb_encode_bytes(&si, 3, (const uint8_t*)"cspot-player", 12);
+    pb_encode_bytes(&si, 4, (const uint8_t *)device_id, strlen(device_id));
+    pb_encode_bytes(out, 2, si.data, si.size);
     pb_free(&si);
 
-    raw_pb_bytes(out, 0x1e, (const uint8_t *)device_id, strlen(device_id));
+    pb_encode_bytes(out, 3, (const uint8_t*)"cspot-1.1", 9);
 }
 
 /* ================================================================== */
