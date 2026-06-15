@@ -187,20 +187,20 @@ Token saved to /tmp/mercury_token_v5.bin
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│                    ESP-Spotify-Connect                        │
+│                    ESP-Spotify-Connect                       │
 ├──────────────────────────────────────────────────────────────┤
 │                                                              │
-│  ┌─────────────┐    ┌──────────────┐    ┌────────────────┐  │
-│  │ Zeroconf    │    │ Login5       │    │ Audio Pipeline │  │
-│  │ Extractor   │───►│ Client       │───►│ (planned)      │  │
-│  │             │    │              │    │                │  │
-│  │ mDNS + Bell │    │ DH + HMAC    │    │ AudioKey fetch │  │
-│  │ + HTTP      │    │ + Shannon    │    │ + CDN resolve  │  │
-│  │ + Layer1/2  │    │ + Protobuf   │    │ + OGG decrypt  │  │
-│  └──────┬──────┘    └──────┬───────┘    └───────┬────────┘  │
+│  ┌─────────────┐    ┌──────────────┐    ┌────────────────┐   │
+│  │ Zeroconf    │    │ Login5       │    │ Audio Pipeline │   │
+│  │ Extractor   │───►│ Client       │───►│ (planned)      │   │
+│  │             │    │              │    │                │   │
+│  │ mDNS + Bell │    │ DH + HMAC    │    │ AudioKey fetch │   │
+│  │ + HTTP      │    │ + Shannon    │    │ + CDN resolve  │   │
+│  │ + Layer1/2  │    │ + Protobuf   │    │ + OGG decrypt  │   │
+│  └──────┬──────┘    └──────┬───────┘    └───────┬────────┘   │
 │         │                  │                    │            │
-│  Output: authData    Output: reusable    Output: PCM audio  │
-│  (base64, 248B)      token (195B)        (I2S/DAC)          │
+│  Output: authData    Output: reusable    Output: PCM audio   │
+│  (base64, 248B)      token (195B)        (I2S/DAC)           │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -210,16 +210,16 @@ Token saved to /tmp/mercury_token_v5.bin
 Spotify App                     Extractor                  Spotify AP
     │                              │                            │
     │──── mDNS discover ──────────►│                            │
-    │◄─── device info JSON ───────│                            │
-    │──── POST blob+clientKey ───►│                            │
+    │◄─── device info JSON ─────── │                            │
+    │──── POST blob+clientKey ───► │                            │
     │                              │                            │
     │              ┌───────────────┴──────────┐                 │
-    │              │ DH shared secret          │                 │
-    │              │ AES-128-CTR decrypt       │                 │
-    │              │ Base64 decode             │                 │
-    │              │ PBKDF2 + AES-192-ECB      │                 │
-    │              │ XOR post-process          │                 │
-    │              │ Protobuf → authData       │                 │
+    │              │ DH shared secret         │                 │
+    │              │ AES-128-CTR decrypt      │                 │
+    │              │ Base64 decode            │                 │
+    │              │ PBKDF2 + AES-192-ECB     │                 │
+    │              │ XOR post-process         │                 │
+    │              │ Protobuf → authData      │                 │
     │              └───────────────┬──────────┘                 │
     │                              │                            │
     │                              │─── TCP connect ───────────►│
