@@ -1,3 +1,4 @@
+// DEPRECATED: uses old public OAuth API. See examples/basic_pairing/ for new flow.
 /**
  * test_v2.c — Quick full chain test
  */
