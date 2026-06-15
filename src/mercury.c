@@ -538,11 +538,11 @@ int mercury_login5(mercury_session_t *s,
     platform_dh_compute_shared(s->dh_private, server_dh, 96, s->shared_key);
 
     /* ---------- HMAC challenge ---------- */
-    /* KEY: uses hello_pkt (FULL packet with prefix), NOT proto-only! */
+    /* KEY: uses ch_proto ONLY (no prefix/len header), matches standalone cb.insert(ch.begin(),ch.end()) */
     uint8_t challenge[100];
     compute_auth_challenge(s->shared_key, 96,
-                           hello_pkt, hello_pkt_len,
-                           ar_buf, ar_len,
+                           ch_proto.data, ch_proto.size,  /* proto only, NOT wire packet */
+                           ar_buf, ar_len,     /* [4B len][ar_proto] */
                            challenge);
 
     uint8_t send_key[32], recv_key[32];
@@ -569,6 +569,11 @@ int mercury_login5(mercury_session_t *s,
     s->send_nonce = 0;
     s->recv_nonce = 0;
     fprintf(stderr, "[%s] Shannon ready\n", TAG);
+    fprintf(stderr, "[%s] KEYS sk=", TAG);
+    for (int ki = 0; ki < 16; ki++) fprintf(stderr, "%02x", send_key[ki]);
+    fprintf(stderr, " rk=");
+    for (int ki = 0; ki < 16; ki++) fprintf(stderr, "%02x", recv_key[ki]);
+    fprintf(stderr, "\n");
 
     /* ---------- Build & send LoginRequest ---------- */
     pb_buf_t lr_buf;
