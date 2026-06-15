@@ -400,12 +400,10 @@ static int tcp_recv_packet(platform_socket_t sock,
 
 static void shannon_init(platform_shannon_t *snd, platform_shannon_t *rcv,
                          const uint8_t *sk, const uint8_t *rk) {
-    /* Only load keys — nonce will be set by mercury_send/recv before first use */
-    /* Calling nonce here would be idempotent BUT CRC carries over from the
-       first nonce call, making the second nonce(0) in mercury_send produce a
-       DIFFERENT state than the standalone which calls nonce(0) only once. */
-    platform_shannon_key(snd, sk, 32);
-    platform_shannon_key(rcv, rk, 32);
+    /* Must use PAIRED key init — matches cspot Shannon::key(sk,rk) exactly.
+       Separate init() would produce different states because genkonst()
+       must be interleaved between loading the two keys. */
+    platform_shannon_key_pair(snd, rcv, sk, rk);
 }
 
 /* ================================================================== */

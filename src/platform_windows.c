@@ -579,6 +579,35 @@ void platform_shannon_key(platform_shannon_t *s, const uint8_t *key, size_t key_
 }
 
 
+void platform_shannon_key_pair(platform_shannon_t *snd, platform_shannon_t *rcv,
+                                const uint8_t *send_key, const uint8_t *recv_key) {
+    /* Matches cspot standalone Shannon::key(sk, rk) exactly:
+     *   init → loadkey(sk) → saveState → genkonst → loadkey(rk) → [recv]
+     *                       → restore → genkonst → loadkey(sk) → [send]
+     * The shared genkonst() between loadkey calls makes send/recv states
+     * different from loading each key independently from init(). */
+    shannon_init_state(snd);
+    shannon_load_key(snd, send_key, 32);
+    shannon_save_state(snd);
+    shannon_genkonst(snd);
+    shannon_load_key(snd, recv_key, 32);
+    /* Save recv state */
+    memcpy(rcv->R, snd->R, sizeof(rcv->R));
+    memcpy(rcv->CRC, snd->CRC, sizeof(rcv->CRC));
+    rcv->konst = snd->konst;
+    rcv->sbuf = snd->sbuf;
+    shannon_save_state(rcv);
+    rcv->nbuf = 0;
+
+    /* Restore to after loadkey(sk) for send */
+    shannon_reload_state(snd);
+    snd->konst = SHANNON_INITKONST;
+    shannon_genkonst(snd);
+    shannon_load_key(snd, send_key, 32);
+    shannon_save_state(snd);
+    snd->nbuf = 0;
+}
+
 void platform_shannon_nonce(platform_shannon_t *s, const uint8_t *nonce, size_t nonce_len) {
     shannon_reload_state(s);
     s->konst = SHANNON_INITKONST;

@@ -306,7 +306,7 @@ static int do_download_decrypt(void) {
 int main(void) {
     fprintf(stderr, "===========================================\n");
     fprintf(stderr, "  ESPConnect E2E Pipeline Test\n");
-    fprintf(stderr, "  Version : v24\n");
+    fprintf(stderr, "  Version : v25\n");
     fprintf(stderr, "  Build   : %s %s\n", __DATE__, __TIME__);
     fprintf(stderr, "  Device  : %s\n", DEVICE_NAME);
     fprintf(stderr, "  Track   : 0daEJMXc3b4ZMTnvtHpuTt\n");
