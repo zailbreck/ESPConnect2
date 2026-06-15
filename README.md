@@ -175,7 +175,7 @@ AUTHB64=$(cat /tmp/authData.bin | base64 -w0)
 ```
 === AUTH SUCCESS ===
 Canonical: 31gs6dlgp5sdrb32kznvsklgwhiy
-Display: Naufal
+Display: John
 Reusable: 195B type=1
 Token saved to /tmp/mercury_token_v5.bin
 ```
