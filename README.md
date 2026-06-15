@@ -1,40 +1,11 @@
 # ESP-Spotify-Connect — Turn your ESP32 into a Smart Speaker
 
-Pure C++ implementation. Zero dependencies beyond mbedtls & OpenSSL. No cspot runtime. No librespot. No ESP-IDF required for x86 builds.
-
-Compiles with `g++` on Linux and `mingw-w64` on Windows. ESP32 build via ESP-IDF v5+.
+C library with platform abstraction layer. Zero ESP-IDF dependencies in core. Compiles on Linux x86 with OpenSSL, deploys to ESP32 with mbedtls + lwip. No cspot runtime. No librespot.
 
 [![Status](https://img.shields.io/badge/status-active-brightgreen)]()
 [![License](https://img.shields.io/badge/license-MIT-blue)]()
 [![Spotify](https://img.shields.io/badge/spotify-v2.12.0-1DB954)]()
-
----
-
-## Quick Start
-
-### Zeroconf Capture (extract credentials from Spotify app)
-
-```bash
-# Linux x86
-g++ -std=c++20 -pthread -O2 \
-  cspot_zeroconf_mdnssvc_v13.cpp mdns.c mdnsd.c \
-  -I mbedtls-3.6.5/include \
-  -lmbedtls -lmbedcrypto -lmbedx509 \
-  -o cspot_extractor
-
-./cspot_extractor
-# Open Spotify on phone/desktop, tap "ESPConnect-TEST" in device list
-# Credentials saved to credentials.txt
-```
-
-### Login5 Client (authenticate to Spotify AP)
-
-```bash
-g++ -std=c++20 -O2 mercury_login5_v5.cpp -lssl -lcrypto -o mercury_login5
-
-./mercury_login5 "<authData_b64>" <authType> "<username>"
-# Output: reusable token → /tmp/mercury_token_v5.bin
-```
+[![Standard](https://img.shields.io/badge/C-gnu11-lightgrey)]()
 
 ---
 
@@ -42,94 +13,158 @@ g++ -std=c++20 -O2 mercury_login5_v5.cpp -lssl -lcrypto -o mercury_login5
 
 | Component | Description | Status |
 |-----------|-------------|--------|
-| **mDNS Discovery** | `_spotify-connect._tcp` advertisement with `Stack=SP` | ✅ |
-| **Bell HTTP Server** | `/spotify_info` GET/POST endpoint on port 7864 | ✅ |
-| **DH Key Exchange** | Classic 768-bit DH (Oakley Group 2 / RFC 2409) | ✅ |
-| **Layer 1 Decrypt** | AES-128-CTR with HMAC-SHA1 verification | ✅ |
-| **Layer 2 Decrypt** | PBKDF2-HMAC-SHA1 → SHA1 → AES-192-ECB → XOR | ✅ |
+| **ZeroConf Pairing** | mDNS discovery + Bell HTTP + DH key exchange | ✅ |
+| **Credential Decrypt** | AES-128-CTR (Layer 1) + PBKDF2/AES-192-ECB/XOR (Layer 2) | ✅ |
 | **Protobuf Parse** | Manual wire-format decode, extract `authData` | ✅ |
-| **Mercury Login5** | DH+HMAC+Shannon auth to Spotify AP | ✅ |
+| **Mercury Login5** | DH + HMAC challenge + Shannon encrypted channel | ✅ |
+| **Client Token** | Obtain reusable bearer token via Mercury | ✅ |
+| **Track Metadata** | Fetch track/file IDs via internal spclient API | ✅ |
+| **CDN Resolve** | `storage-resolve` → CDN URL for audio file | ✅ |
+| **AudioKey Fetch** | AES-128 key request via Mercury (0x0C) | ✅ |
+| **CDN Download** | HTTP Range request for encrypted OGG chunks | ✅ |
+| **Audio Decrypt** | AES-128-CTR + SHA1-based seek table | ✅ |
 | **Shannon Cipher** | Exact cspot Shannon (N=16, verified) | ✅ |
-| **AudioKey Fetch** | Authenticated Mercury session → audio keys | ⏳ |
-| **CDN Stream** | Resolve CDN URLs, decrypt OGG/Vorbis | ⏳ |
+| **Dual Platform** | POSIX (OpenSSL) + ESP32 (mbedtls/lwip) | ✅ |
 
 **Tested on:** Spotify v2.12.0 — Desktop Windows, Android 15, iPhone 15 (iOS 26).
 
 ---
 
-## Dependencies
+## Architecture
 
-### Build-time (x86 Linux)
-- `g++` (C++20) or `mingw-w64-g++` (Windows cross-compile)
-- `mbedtls` 3.6.5 (Zeroconf extractor — DH, AES, SHA1, PBKDF2)
-- `openssl` 3.x (Login5 client — DH, HMAC, SHA1, RAND)
-
-### Build-time (ESP32)
-- ESP-IDF v5.0+ with `idf.py`
-- mbedtls (bundled with ESP-IDF)
-- WiFi + mDNS components
-
-### Runtime
-- Same local network as the Spotify app device
-- Port 7864 open (Bell HTTP server)
-- Outbound TCP to `ap-gae2.spotify.com:443` (Spotify AP)
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                      ESP-Spotify-Connect                         │
+├──────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  ┌───────────┐   ┌──────────┐   ┌──────────┐   ┌─────────────┐  │
+│  │ zeroconf  │   │ mercury  │   │ spclient  │   │  decrypt    │  │
+│  │ .c        │──►│ .c       │──►│ .c        │──►│  .c         │  │
+│  │           │   │          │   │           │   │             │  │
+│  │ pairing   │   │ login5   │   │ metadata  │   │ AES-CTR     │  │
+│  │ + DH      │   │ + HMAC   │   │ + cdn     │   │ OGG/Vorbis  │  │
+│  │ + Layer1  │   │ + Shannon│   │ + audiokey│   │             │  │
+│  │ + Layer2  │   │          │   │ + HTTP    │   │             │  │
+│  └─────┬─────┘   └────┬─────┘   └─────┬─────┘   └──────┬──────┘  │
+│        │              │               │                │         │
+│  ┌─────┴──────────────┴───────────────┴────────────────┴─────┐   │
+│  │                  Platform Abstraction                     │   │
+│  │  ┌─────────────────────┐  ┌─────────────────────────┐    │   │
+│  │  │ platform_posix.c    │  │ platform_esp32.c         │    │   │
+│  │  │ OpenSSL + POSIX     │  │ mbedtls + lwip + ESP-IDF │    │   │
+│  │  └─────────────────────┘  └─────────────────────────┘    │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│                                                                  │
+│  Public API: esp_spotify.h                                       │
+│  init → pair → login → metadata → cdn → audiokey → decrypt      │
+└──────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
-## Building from Source
-
-### Zeroconf Extractor (Linux x86)
+## Quick Start (x86 Linux)
 
 ```bash
-# Clone and build mbedtls
-cd mbedtls-3.6.5 && make -j$(nproc)
+git clone git@github.com:zailbreck/ESPConnect.git
+cd ESPConnect
 
-# Compile mDNS source (from mdns library)
-gcc -c -O2 mdns.c mdnsd.c
+# Build all modules (POSIX target)
+gcc -std=gnu11 -O2 -I include -I include/internal \
+  src/mercury.c src/spclient.c src/zeroconf.c src/decrypt.c \
+  src/esp_spotify.c src/platform_posix.c \
+  test/x86/test_build.c \
+  -lssl -lcrypto -lm \
+  -o test_build
 
-# Compile extractor
-g++ -std=c++20 -pthread -O2 \
-  cspot_zeroconf_mdnssvc_v13.cpp mdns.o mdnsd.o \
-  -I mbedtls-3.6.5/include \
-  -L mbedtls-3.6.5/library \
-  -lmbedtls -lmbedcrypto -lmbedx509 \
-  -o cspot_extractor
+./test_build
 ```
 
-### Zeroconf Extractor (Windows static .exe)
+---
 
-```bash
-# Cross-compile mbedtls for mingw
-cd mbedtls-3.6.5
-CC=x86_64-w64-mingw32-gcc AR=x86_64-w64-mingw32-ar make -j$(nproc)
+## Library API
 
-# Cross-compile mDNS
-x86_64-w64-mingw32-gcc -c -O2 mdns.c mdnsd.c
+```c
+#include "esp_spotify.h"
 
-# Cross-compile extractor (static, no DLLs)
-x86_64-w64-mingw32-g++ -std=c++20 -O2 -static \
-  cspot_zeroconf_mdnssvc_v13.cpp mdns.o mdnsd.o \
-  -I mbedtls-3.6.5/include \
-  mbedtls-3.6.5/library/libmbedcrypto.a \
-  mbedtls-3.6.5/library/libmbedtls.a \
-  mbedtls-3.6.5/library/libmbedx509.a \
-  -lws2_32 -lpthread -lbcrypt \
-  -o cspot_extractor.exe
+esp_spotify_handle_t spotify;
+esp_spotify_config_t cfg = {
+    .device_name = "ESPConnect",
+    .device_id   = "142137fd329622137a14901634264e6f332e2411",
+    .bell_port   = 7864,
+};
+
+esp_spotify_init(&cfg, &spotify);          // Init
+esp_spotify_start(spotify);                 // mDNS + Bell
+esp_spotify_pair(spotify, 300);            // Wait for Spotify app
+esp_spotify_login(spotify);                 // Login5 auth
+
+// Track metadata
+spclient_track_meta_t meta;
+uint8_t gid[16] = {0x06, 0xfa, ...};      // 16-byte track GID
+esp_spotify_get_track_meta(spotify, gid, &meta);
+
+// CDN
+char cdn_url[512];
+esp_spotify_resolve_cdn(spotify, meta.file_id, cdn_url, sizeof(cdn_url));
+
+uint8_t audio_buf[16384];
+esp_spotify_download_audio(spotify, cdn_url, 0, 16384, audio_buf, sizeof(audio_buf));
+
+// AudioKey + Decrypt
+uint8_t key[16];
+esp_spotify_get_audio_key(spotify, gid, meta.file_id_bin, key);
+esp_spotify_decrypt_audio(audio_buf, 16384, key, meta.file_id_bin);
+
+esp_spotify_stop(spotify);
+esp_spotify_destroy(spotify);
 ```
 
-### Login5 Client (Linux x86)
+---
 
-```bash
-g++ -std=c++20 -O2 -Wno-deprecated-declarations \
-  mercury_login5_v5.cpp \
-  -lssl -lcrypto \
-  -o mercury_login5
+## Platform Abstraction
+
+Core library files have **zero ESP-IDF dependencies**. All platform-specific code lives in two files:
+
+| File | Platform | Crypto | Network | TLS | Lines |
+|------|----------|--------|---------|-----|-------|
+| `platform_posix.c` | Linux x86 | OpenSSL 3.x | POSIX sockets | OpenSSL | 756 |
+| `platform_esp32.c` | ESP32 (IDF v5+) | mbedtls 3.x | lwip | mbedtls | 622 |
+
+**Platform API** (`include/internal/platform.h`):
+```
+Crypto:   sha1, hmac_sha1, pbkdf2, aes_ctr128, aes_ecb_decrypt192,
+          dh_generate_keypair, dh_compute_shared, random, base64
+Network:  tcp_connect, tcp_read/write, tcp_close, tcp_set_timeout
+HTTP:     http_server_start/stop/accept/read/write
+mDNS:     mdns_start, mdns_register_service, mdns_stop
+Shannon:  shannon_new/free/key/nonce/encrypt/decrypt/finish
+TLS:      tls_connect, tls_read/write, tls_close
+HTTPS:    https_get, http_response_free
 ```
 
-### ESP32 (ESP-IDF)
+---
+
+## Dependencies
+
+### x86 Linux
+- `gcc` (gnu11) or `clang`
+- `openssl` 3.x (`libssl-dev`, `libcrypto-dev`)
+
+### ESP32
+- ESP-IDF v5.0+
+- Components: `mbedtls`, `esp_http_client`, `mdns`, `esp_netif`, `nvs_flash`
+
+### Runtime
+- Same local network as Spotify app for pairing
+- Port 7864 open (Bell HTTP server)
+- Outbound TCP to `ap-gew4.spotify.com:443`
+
+---
+
+## ESP32 Build (ESP-IDF)
 
 ```bash
-cd esp-spotify-connect
+cd ESPConnect
 idf.py set-target esp32
 idf.py build
 idf.py flash monitor
@@ -137,98 +172,43 @@ idf.py flash monitor
 
 ---
 
-## Usage
-
-### Zeroconf Capture
-
-```bash
-# Linux
-./cspot_extractor
-
-# Windows
-cspot_extractor.exe
-
-# With explicit local IP (if auto-detection fails)
-./cspot_extractor 192.168.1.100
-```
-
-1. Run the extractor on the same network as your Spotify device
-2. Open Spotify app → "Connect to a device" → look for **"ESPConnect-TEST"**
-3. Tap to pair
-4. Credentials saved to `credentials.txt`
-
-### Login5 Authentication
-
-```bash
-# Stored credentials (authType=1, 248 bytes)
-./mercury_login5 "<base64_authData>" 1 "<username>"
-
-# Cookie credentials (authType=113, 2693 bytes)
-AUTHB64=$(cat /tmp/authData.bin | base64 -w0)
-./mercury_login5 "$AUTHB64" 113 "<username>"
-
-# Custom AP endpoint
-./mercury_login5 "<authB64>" 1 "<user>" "ap-gew4.spotify.com:443"
-```
-
-**Output:**
-```
-=== AUTH SUCCESS ===
-Canonical: 31gs6dlgp5sdrb32kznvsklgwhiy
-Display: John
-Reusable: 195B type=1
-Token saved to /tmp/mercury_token_v5.bin
-```
-
----
-
-## Architecture
+## Protocol Flow
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                    ESP-Spotify-Connect                       │
-├──────────────────────────────────────────────────────────────┤
-│                                                              │
-│  ┌─────────────┐    ┌──────────────┐    ┌────────────────┐   │
-│  │ Zeroconf    │    │ Login5       │    │ Audio Pipeline │   │
-│  │ Extractor   │───►│ Client       │───►│ (planned)      │   │
-│  │             │    │              │    │                │   │
-│  │ mDNS + Bell │    │ DH + HMAC    │    │ AudioKey fetch │   │
-│  │ + HTTP      │    │ + Shannon    │    │ + CDN resolve  │   │
-│  │ + Layer1/2  │    │ + Protobuf   │    │ + OGG decrypt  │   │
-│  └──────┬──────┘    └──────┬───────┘    └───────┬────────┘   │
-│         │                  │                    │            │
-│  Output: authData    Output: reusable    Output: PCM audio   │
-│  (base64, 248B)      token (195B)        (I2S/DAC)           │
-└──────────────────────────────────────────────────────────────┘
-```
-
-### Protocol Flow
-
-```
-Spotify App                     Extractor                  Spotify AP
-    │                              │                            │
-    │──── mDNS discover ──────────►│                            │
-    │◄─── device info JSON ─────── │                            │
-    │──── POST blob+clientKey ───► │                            │
-    │                              │                            │
-    │              ┌───────────────┴──────────┐                 │
-    │              │ DH shared secret         │                 │
-    │              │ AES-128-CTR decrypt      │                 │
-    │              │ Base64 decode            │                 │
-    │              │ PBKDF2 + AES-192-ECB     │                 │
-    │              │ XOR post-process         │                 │
-    │              │ Protobuf → authData      │                 │
-    │              └───────────────┬──────────┘                 │
-    │                              │                            │
-    │                              │─── TCP connect ───────────►│
-    │                              │─── ClientHello + DH key ──►│
-    │                              │◄── APResponse + server DH ─│
-    │                              │─── ClientResp HMAC ───────►│
-    │                              │─── Shannon LoginReq ──────►│
-    │                              │◄── Shannon APWelcome ──────│
-    │                              │                            │
-    │                     Output: reusable token                │
+Spotify App              ESPConnect Library              Spotify AP
+    │                         │                               │
+    │── mDNS discover ───────►│                               │
+    │◄── device JSON ──────── │                               │
+    │── POST blob+clientKey ─►│                               │
+    │                         │                               │
+    │    ┌────────────────────┤ DH shared secret              │
+    │    │ Layer 1: AES-CTR   │ HMAC-SHA1 verify             │
+    │    │ Layer 2: PBKDF2+ECB│ Protobuf → authData          │
+    │    └────────────────────┤                               │
+    │                         │                               │
+    │                         │── TCP/TLS connect ───────────►│
+    │                         │── ClientHello + DH keypool ──►│
+    │                         │◄── APResponse + server DH ────│
+    │                         │── ClientResp + HMAC proof ───►│
+    │                         │── Shannon LoginReq ──────────►│
+    │                         │◄── Shannon APWelcome ─────────│
+    │                         │                               │
+    │                         │── Client Token (spclient) ───►│
+    │                         │◄── Bearer token ──────────────│
+    │                         │                               │
+    │                         │── metadata/4/{gid} ──────────►│
+    │                         │◄── Track JSON (file IDs) ─────│
+    │                         │                               │
+    │                         │── storage-resolve/{fileid} ──►│
+    │                         │◄── CDN URLs ──────────────────│
+    │                         │                               │
+    │                         │── AudioKey (0x0C Mercury) ───►│
+    │                         │◄── AES key (0x0D) ────────────│
+    │                         │                               │
+    │                         │── CDN Range GET ─────────────►│
+    │                         │◄── Encrypted OGG chunks ──────│
+    │                         │                               │
+    │              AES-128-CTR decrypt → PCM audio            │
 ```
 
 ---
@@ -237,14 +217,7 @@ Spotify App                     Extractor                  Spotify AP
 
 ### 1. Zeroconf Pairing
 
-The device announces itself via mDNS as `_spotify-connect._tcp` with:
-- `Stack=SP` — mandatory, filters devices
-- `CPath=/spotify_info` — Bell HTTP path
-- `VERSION=1.0`
-
-Spotify app discovers the device, requests device info, then POSTs encrypted credentials.
-
-**Why mDNS (not OAuth):** For public distribution — any Spotify Premium user can pair without app registration.
+mDNS advertises `_spotify-connect._tcp` with `Stack=SP`, `CPath=/spotify_info`, `VERSION=1.0`.
 
 ### 2. Diffie-Hellman (Oakley Group 2)
 
@@ -253,24 +226,22 @@ Spotify app discovers the device, requests device info, then POSTs encrypted cre
 | Prime | RFC 2409, 768-bit MODP |
 | Generator | 2 |
 | Key size | 96 bytes |
-| Implementation | `mbedtls_mpi` (Zeroconf) / OpenSSL `DH_*` (Login5) |
 
-**Critical:** Classic DH, NOT Curve25519. The Spotify app uses the classic prime. Curve25519 produces mismatched keys.
+**Critical:** Classic DH, NOT Curve25519. Spotify app uses the classic prime.
 
 ### 3. Layer 1: AES-128-CTR
 
 ```
-Blob structure (420 bytes):
-[IV:16] [CTR-payload:384] [HMAC-SHA1:20]
+Blob (420 bytes): [IV:16] [CTR-payload:384] [HMAC-SHA1:20]
 
 Key derivation:
-  baseKey = SHA1(sharedSecret[0:95])
+  baseKey     = SHA1(sharedSecret[0:95])
   checksumKey = HMAC-SHA1(baseKey[0:15], "checksum")
   encryptKey  = HMAC-SHA1(baseKey[0:15], "encryption")
 
-  1. Verify: HMAC-SHA1(checksumKey, payload[0:383]) == blob[400:419]
-  2. Decrypt: AES-128-CTR(encryptKey, IV=blob[0:15], payload)
-  → 384 bytes base64
+1. Verify: HMAC-SHA1(checksumKey, payload[0:383]) == blob[400:419]
+2. Decrypt: AES-128-CTR(encryptKey, IV=blob[0:15], payload)
+   → 384 bytes base64 → 288 bytes binary
 ```
 
 ### 4. Layer 2: PBKDF2 + AES-192-ECB + XOR
@@ -279,18 +250,13 @@ Key derivation:
 Key derivation:
   secret = SHA1(deviceId)
   pbkdf2 = PBKDF2-HMAC-SHA1(secret, username, iter=256, len=20)
-  sha1 = SHA1(pbkdf2)
-  ecbKey = sha1 || 0x00000014  → 24 bytes (AES-192)
+  ecbKey = SHA1(pbkdf2) || 0x00000014  → 24 bytes (AES-192)
 
-Decrypt:
-  AES-192-ECB(ecbKey, all 288 bytes)
-  XOR post-process: data[len-i-1] ^= data[len-i-17]
-  → Protobuf: [0x49][varint-len][username][0x50][authType][0x51][authData]
+Decrypt: AES-192-ECB(ecbKey, 288 bytes) → XOR post-process
+  → Protobuf: {loginId, username, authType, authData}
 ```
 
-### 5. Shannon Cipher (N=16)
-
-Exact copy from [cspot Shannon.cpp](https://github.com/feelfreelinux/cspot/blob/master/cspot/src/Shannon.cpp).
+### 5. Mercury Login5 (Shannon Cipher)
 
 | Parameter | Value |
 |-----------|-------|
@@ -298,25 +264,29 @@ Exact copy from [cspot Shannon.cpp](https://github.com/feelfreelinux/cspot/blob/
 | INITKONST | 0x6996c53a |
 | KEYP | 13 |
 | FOLD | 16 |
-| Rotation | `rotl(n,c) = (n<<c) \| (n>>((-c)&31))` |
 
-**Verified:** Roundtrip encrypt+decrypt test PASS, MAC match.
+**Source:** Exact copy from cspot Shannon.cpp.
 
-### 6. Protobuf Wire Format
+### 6. Mercury AudioKey
 
-All messages use manual tag-length-value encoding (no nanopb/codegen).
+Command `0x0C` payload: `[FILEID:16] [TRACKID:16] [SEQ:4 BE] [0x00, 0x00]`.
+Response `0x0D` = success with AES-128 key, `0x0E` = failure.
 
-Key field numbers from [keyexchange.proto](https://github.com/feelfreelinux/cspot/blob/master/cspot/protobuf/keyexchange.proto):
+### 7. Audio Decrypt (AES-128-CTR)
 
-| Message | Field | Number | Type |
-|---------|-------|--------|------|
-| ClientHello | build_info | 0x0a (10) | BuildInfo |
-| ClientHello | login_crypto_hello | 0x32 (50) | LoginCryptoHelloUnion |
-| ClientHello | client_nonce | 0x3c (60) | bytes |
-| ClientHello | feature_set | 0x50 (80) | FeatureSet |
-| ClientResponsePlaintext | login_crypto_response | 0x0a (10) | LoginCryptoResponseUnion |
-| ClientResponsePlaintext | pow_response | 0x14 (20) | PoWResponseUnion (required!) |
-| ClientResponsePlaintext | crypto_response | 0x1e (30) | CryptoResponseUnion (required!) |
+OGG pages encrypted with AES-128-CTR. Seek table built from SHA1 hashes of encrypted chunks for random access.
+
+---
+
+## Bugs Discovered & Fixed
+
+| # | Bug | Impact | File |
+|---|-----|--------|------|
+| 1 | Shannon rotation `(-c)&c` not `(-c)&31` | Broken keystream | mercury.c |
+| 2 | HMAC byte order reversed | Wrong Shannon keys | mercury.c |
+| 3 | Missing protobuf required fields | Server rejected ClientResp | mercury.c |
+| 4 | Missing PING/PONG handler | Connection timeout | mercury.c |
+| **5** | **HMAC used proto-only bytes, not full packet** | **Auth always failed** | mercury.c |
 
 ---
 
@@ -324,66 +294,50 @@ Key field numbers from [keyexchange.proto](https://github.com/feelfreelinux/cspo
 
 | Platform | Spotify Version | Pairing | Decrypt | authType | authSize |
 |----------|-----------------|---------|---------|----------|----------|
-| Android 15 (Xiaomi) | 2.12.0 | ✅ | ✅ | 1 | 248 |
-| Windows Desktop | 2.12.0 | ✅ | ✅ | 1 | 248 |
-| iPhone 15 (iOS 26) | 2.12.0 | ✅ | ✅ | 1 | 248 |
+| Android 15 | 2.12.0 | ✅ | ✅ | 1 (STORED) | 248 |
+| Windows Desktop | 2.12.0 | ✅ | ✅ | 1 (STORED) | 248 |
+| iOS 26 | 2.12.0 | ✅ | ✅ | 1 (STORED) | 248 |
 
 ---
 
 ## Key Decisions
 
-1. **Classic DH over Curve25519** — Spotify app uses classic 768-bit DH, not Curve25519
-2. **Stable deviceId** — `142137fd329622137a1490161234567890123456`. Must be constant; PBKDF2 depends on `SHA1(deviceId)`
-3. **Pure mbedtls/OpenSSL, no cspot runtime dependency** — raw crypto APIs, no `Crypto.cpp` wrapper
-4. **Manual protobuf** — field tags written/read by hand, no codegen
-5. **Zeroconf only** — for public distribution, every user pairs with their own Spotify app
-
----
-
-## Bugs Discovered & Fixed (Login5 v5)
-
-### #1 Corrupted Shannon Rotation
-`sh_rot(n,c)` used `(-c)&c` instead of `(-c)&31` — produced wrong rotation, broken keystream.
-
-### #2 HMAC Byte Order Reversal
-`[x][ch+ar]` vs `[ch+ar][x]` — prepend byte in wrong position, different HMAC → wrong Shannon keys.
-
-### #3 Missing Proto Required Fields
-`ClientResponsePlaintext` missing `pow_response` (field 20) and `crypto_response` (field 30) — both required.
+1. **Classic DH over Curve25519** — Spotify app uses classic 768-bit DH
+2. **Stable deviceId** — PBKDF2 depends on `SHA1(deviceId)`, must be constant
+3. **Pure C (gnu11)** — No C++ runtime, direct ESP-IDF compatibility
+4. **Platform abstraction** — Core has 0 ESP-IDF deps, all OS via `platform_*` calls
+5. **No codegen** — Protobuf tags written/read by hand
+6. **Zeroconf only** — Every user pairs with their own Spotify app
+7. **Login5** — HMAC challenge uses **full ClientHello packet** (with 0x00,0x04 prefix + 4-byte length header), NOT proto-only bytes
 
 ---
 
 ## Source Code References
 
-Code in this repository derives from the following open-source projects. All are MIT-licensed.
+All MIT-licensed.
 
-| Component | Source | File(s) |
-|-----------|--------|---------|
-| Shannon cipher | [cspot](https://github.com/feelfreelinux/cspot) | `Shannon.h`, `Shannon.cpp` |
-| ShannonConnection | [cspot](https://github.com/feelfreelinux/cspot) | `ShannonConnection.h`, `ShannonConnection.cpp` |
-| Protobuf schema | [cspot](https://github.com/feelfreelinux/cspot) | `keyexchange.proto` |
-| HMAC challenge | [librespot](https://github.com/librespot-org/librespot) | `auth_challenge.rs` |
-| DH Group 1 | [RFC 2409](https://datatracker.ietf.org/doc/html/rfc2409) | Section 6.2 |
-| pack/extract utils | [cspot](https://github.com/feelfreelinux/cspot) | `Utils.h` |
-| mDNS library | [mdns](https://github.com/mjansson/mdns) | `mdns.c`, `mdnsd.c` |
-
-Each borrowed file or function includes a comment referencing its source URL and license at the top of the file.
+| Component | Source |
+|-----------|--------|
+| Shannon cipher | [cspot](https://github.com/feelfreelinux/cspot) — Shannon.cpp |
+| Login5 protocol | [librespot](https://github.com/librespot-org/librespot) — login5.rs |
+| HMAC challenge | [librespot](https://github.com/librespot-org/librespot) — auth_challenge.rs |
+| Spclient HTTP API | [librespot](https://github.com/librespot-org/librespot) — spclient.rs |
+| Audio decrypt | [librespot](https://github.com/librespot-org/librespot) — decrypt.rs |
+| DH Group 2 | [RFC 2409](https://datatracker.ietf.org/doc/html/rfc2409) Section 6.2 |
+| Protobuf schema | [cspot](https://github.com/feelfreelinux/cspot) — keyexchange.proto |
+| mDNS library | [mdns](https://github.com/mjansson/mdns) — mdns.c, mdnsd.c |
 
 ---
 
 ## Related Projects
 
 - [librespot](https://github.com/librespot-org/librespot) — Open source Spotify client library (Rust)
-- [cspot](https://github.com/feelfreelinux/cspot) — ESP32 Spotify Connect implementation (C++)
+- [cspot](https://github.com/feelfreelinux/cspot) — ESP32 Spotify Connect (C++)
 - [raspotify](https://github.com/dtcooper/raspotify) — Raspberry Pi Spotify Connect
 - [spotifyd](https://github.com/Spotifyd/spotifyd) — UNIX Spotify Connect daemon
-- [ncspot](https://github.com/hrkfdn/ncspot) — ncurses Spotify client
-- [Shannon Cipher](https://github.com/oleganza/Shannon-Cipher) — Reference Shannon spec
 
 ---
 
 ## License
 
 MIT — derived from [cspot](https://github.com/feelfreelinux/cspot) and [librespot](https://github.com/librespot-org/librespot), both MIT-licensed.
-
-Use at your own risk. Connecting to Spotify's API may violate their Terms of Service.
