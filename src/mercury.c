@@ -578,12 +578,15 @@ int mercury_login5(mercury_session_t *s,
     /* ---------- Init Shannon ---------- */
     shannon_init(s->send_cipher, s->recv_cipher, send_key, recv_key);
     s->send_nonce = 0;
-    s->recv_nonce = 0;
+    s->recv_nonce = 1;   /* Matches standalone: rcv.nonce(htonl(1)), rn=1 */
     fprintf(stderr, "[%s] Shannon ready\n", TAG);
     fprintf(stderr, "[%s] KEYS sk=", TAG);
-    for (int ki = 0; ki < 16; ki++) fprintf(stderr, "%02x", send_key[ki]);
+    for (int ki = 0; ki < 32; ki++) fprintf(stderr, "%02x", send_key[ki]);
     fprintf(stderr, " rk=");
-    for (int ki = 0; ki < 16; ki++) fprintf(stderr, "%02x", recv_key[ki]);
+    for (int ki = 0; ki < 32; ki++) fprintf(stderr, "%02x", recv_key[ki]);
+    fprintf(stderr, "\n");
+    fprintf(stderr, "[%s] FULL challenge(100)=", TAG);
+    for (int ki = 0; ki < 100; ki++) fprintf(stderr, "%02x", challenge[ki]);
     fprintf(stderr, "\n");
 
     /* ---------- Build & send LoginRequest ---------- */
@@ -712,6 +715,12 @@ int mercury_send(mercury_session_t *s, uint8_t cmd,
     platform_shannon_nonce(s->send_cipher, nonce, 4);
 
     platform_shannon_encrypt(s->send_cipher, buf, sz);
+    
+    /* Debug: hex dump first 16 encrypted bytes */
+    fprintf(stderr, "[mercury] encrypted hex(first16)=");
+    for (size_t __i = 0; __i < (sz < 16 ? sz : 16); __i++) fprintf(stderr, "%02x", buf[__i]);
+    fprintf(stderr, "\n");
+    
     if (platform_tcp_write(s->sock, buf, sz) != 0) { free(buf); return -2; }
 
     uint8_t mac[SHANNON_MAC_SZ];

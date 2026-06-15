@@ -630,19 +630,14 @@ void platform_shannon_decrypt(platform_shannon_t *s, uint8_t *buf, size_t nbytes
     }
 }
 
+/* Matches cspot standalone Shannon::finish(uint8_t mac[4]) exactly */
 void platform_shannon_finish(platform_shannon_t *s, uint8_t mac[4]) {
-    int i;
-    if (s->nbuf)
+    if (s->nbuf) {
+        s->mbuf |= (s->nbuf < 32) ? 1 : 0;
         shannon_macfunc(s, s->mbuf);
-    shannon_cycle(s);
-    ADDKEY(s, SHANNON_INITKONST ^ ((uint32_t)s->nbuf << 3));
-    s->nbuf = 0;
-    for (i = 0; i < SHANNON_N; i++)
-        s->R[i] ^= s->CRC[i];
-    shannon_diffuse(s);
-    /* produce MAC: 4 bytes from stream buffer */
-    shannon_cycle(s);
-    WORD2BYTE(s->sbuf, mac);
+    }
+    WORD2BYTE(s->CRC[0], mac);
+    s->initR[0] = s->sbuf;
 }
 
 /* ================================================================== */
