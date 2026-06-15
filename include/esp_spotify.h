@@ -4,11 +4,10 @@
 // Provides credential extraction, authentication, and audio streaming.
 //
 // Sources & References:
-//   Protocol spec:    librespot (MIT) — https://github.com/librespot-org/librespot
-//   ZeroConf pairing: cspot (MIT) — BellTask.cpp, ZeroconfTask.cpp
-//                     https://github.com/feelfreelinux/cspot/tree/master/cspot/src
-//   Mercury protocol: librespot (MIT) — core/src/mercury/
-//   Audio decrypt:    librespot (MIT) — audio/src/decrypt.rs
+//   Login5 auth:       librespot (MIT) — authentication/login5.rs
+//   Spclient API:      librespot (MIT) — spclient.rs, token.rs
+//   Audio decrypt:     librespot (MIT) — audio/src/decrypt.rs
+//   ZeroConf pairing:  cspot (MIT) — BellTask.cpp, ZeroconfTask.cpp
 //
 // License: MIT — derived from librespot & cspot
 
@@ -18,6 +17,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include "internal/spclient.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -27,13 +27,12 @@ extern "C" {
  * @brief Configuration for Spotify Connect
  */
 typedef struct {
-    const char *client_id;      /**< Spotify App Client ID */
-    const char *client_secret;  /**< Spotify App Client Secret */
+    const char *client_id;      /**< Spotify App Client ID (optional) */
+    const char *client_secret;  /**< Spotify App Client Secret (optional) */
     const char *device_name;    /**< Name shown as Spotify device */
-    const char *device_id;      /**< 32-char hex device ID (for zeroconf+login5) */
-    const char *username;       /**< Spotify username (for login5) */
-    const char *password;       /**< Spotify password (for login5) */
-    const char *ap_host;        /**< Spotify AP host (default: ap-gae2.spotify.com) */
+    const char *device_id;      /**< 32-char hex device ID */
+    const char *username;       /**< Spotify username (from zeroconf or manual) */
+    const char *ap_host;        /**< Spotify AP host (default: ap-gew4.spotify.com) */
     int ap_port;                /**< AP port (default: 443) */
     int bell_port;              /**< Bell HTTP port for zeroconf (default: 7864) */
 } esp_spotify_config_t;
@@ -44,111 +43,74 @@ typedef struct {
 typedef struct esp_spotify_session_t *esp_spotify_handle_t;
 
 /**
- * @brief CDN URL info from storage-resolve
- */
-typedef struct {
-    char **cdnurls;             /**< Array of CDN URLs */
-    int num_urls;               /**< Number of CDN URLs */
-    char fileid[64];            /**< File identifier */
-    int ttl;                    /**< Time-to-live in seconds */
-} esp_spotify_cdn_info_t;
-
-/**
  * @brief Audio stream state
  */
 typedef enum {
     ESP_SPOTIFY_STATE_IDLE,
     ESP_SPOTIFY_STATE_CONNECTING,
     ESP_SPOTIFY_STATE_CONNECTED,
+    ESP_SPOTIFY_STATE_AUTHENTICATED,
     ESP_SPOTIFY_STATE_PLAYING,
-    ESP_SPOTIFY_STATE_PAUSED,
     ESP_SPOTIFY_STATE_ERROR,
 } esp_spotify_state_t;
 
-/**
- * @brief Initialize Spotify Connect session
- *
- * @param config Configuration parameters
- * @param handle Output handle for the session
- * @return 0 on success, negative on error
- */
-int esp_spotify_init(const esp_spotify_config_t *config, esp_spotify_handle_t *handle);
+/* ======== Lifecycle ======== */
 
-/**
- * @brief Start Spotify Connect (login + become a device)
- *
- * Starts OAuth2 token acquisition and ZeroConf pairing.
- *
- * @param handle Session handle
- * @return 0 on success, negative on error
- */
+int esp_spotify_init(const esp_spotify_config_t *config, esp_spotify_handle_t *handle);
 int esp_spotify_start(esp_spotify_handle_t handle);
 
-/**
- * @brief Wait for ZeroConf pairing (Spotify app discovers this device).
- *
- * Blocks until credentials are captured from the Spotify app's
- * "Connect to a device" flow, or until the timeout expires.
- *
- * @param handle Session handle
- * @param timeout_seconds Maximum wait time (0 = indefinite)
- * @return 0 if credentials captured, negative on error/timeout
- */
+/* ======== Pairing ======== */
+
 int esp_spotify_pair(esp_spotify_handle_t handle, int timeout_seconds);
 
-/**
- * @brief Authenticate to Spotify AP using Login5.
- *
- * Requires credentials from esp_spotify_pair() to have been
- * captured first. Performs DH handshake + HMAC challenge +
- * Shannon cipher setup + LoginRequest.
- *
- * @param handle Session handle
- * @return 0 on success (APWelcome received), negative on error
- */
+/* ======== Login & Auth ======== */
+
 int esp_spotify_login(esp_spotify_handle_t handle);
 
-/**
- * @brief Resolve CDN URL for a given file ID
- *
- * Uses OAuth2 Client Credentials to get a token,
- * then queries storage-resolve endpoint.
- *
- * @param handle Session handle
- * @param file_id File ID as hex string
- * @param cdn_info Output CDN info (caller must free with esp_spotify_free_cdn_info)
- * @return 0 on success, negative on error
- */
-int esp_spotify_resolve_cdn(esp_spotify_handle_t handle, const char *file_id,
-                            esp_spotify_cdn_info_t *cdn_info);
+/* ======== Track Metadata ======== */
 
-/**
- * @brief Download audio from CDN URL
- *
- * @param handle Session handle
- * @param cdn_url CDN URL from esp_spotify_resolve_cdn
- * @param offset Byte offset for range request (0 for start)
- * @param length Number of bytes to read
- * @param buffer Output buffer
- * @param buffer_size Size of output buffer
- * @return Number of bytes read, negative on error
- */
-int esp_spotify_download_audio(esp_spotify_handle_t handle, const char *cdn_url,
-                               size_t offset, size_t length, uint8_t *buffer, size_t buffer_size);
+/** Get track metadata (file IDs) from spclient */
+int esp_spotify_get_track_meta(esp_spotify_handle_t handle,
+                               const uint8_t track_id[16],
+                               spclient_track_meta_t *meta);
 
-/**
- * @brief Free CDN info allocated by esp_spotify_resolve_cdn
- */
-void esp_spotify_free_cdn_info(esp_spotify_cdn_info_t *cdn_info);
+/* ======== CDN ======== */
 
-/**
- * @brief Stop Spotify Connect
- */
+/** Resolve CDN URL for audio file (20-char hex file ID) */
+int esp_spotify_resolve_cdn(esp_spotify_handle_t handle,
+                            const char *file_id_hex,
+                            char *cdn_url, size_t url_size);
+
+/** Download audio from CDN via HTTP Range request */
+int esp_spotify_download_audio(esp_spotify_handle_t handle,
+                               const char *cdn_url,
+                               size_t offset, size_t length,
+                               uint8_t *buffer, size_t buffer_size);
+
+/* ======== AudioKey ======== */
+
+/** Request AES-128 decryption key via Mercury */
+int esp_spotify_get_audio_key(esp_spotify_handle_t handle,
+                              const uint8_t track_id[16],
+                              const uint8_t file_id[16],
+                              uint8_t key_out[16]);
+
+/* ======== Decrypt ======== */
+
+/** Decrypt Spotify OGG/Vorbis audio chunk (AES-128-CTR) */
+int esp_spotify_decrypt_audio(uint8_t *buffer, size_t length,
+                              const uint8_t key[16],
+                              const uint8_t file_id[20]);
+
+/* ======== Query ======== */
+
+esp_spotify_state_t esp_spotify_get_state(esp_spotify_handle_t handle);
+bool esp_spotify_is_connected(esp_spotify_handle_t handle);
+const char *esp_spotify_get_username(esp_spotify_handle_t handle);
+
+/* ======== Cleanup ======== */
+
 void esp_spotify_stop(esp_spotify_handle_t handle);
-
-/**
- * @brief Destroy Spotify session and free resources
- */
 void esp_spotify_destroy(esp_spotify_handle_t handle);
 
 #ifdef __cplusplus
