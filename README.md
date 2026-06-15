@@ -1,7 +1,7 @@
-# ESP-Spotify-Connect — ESP32 Spotify Connect Credential Extractor & Login5 Client
+# ESP-Spotify-Connect — Turn your ESP32 into a Smart Speaker
 
-**Pure C++ implementation. Zero dependencies beyond mbedtls & OpenSSL.**
-No cspot runtime. No librespot. No ESP-IDF required for x86 builds.
+Pure C++ implementation. Zero dependencies beyond mbedtls & OpenSSL. No cspot runtime. No librespot. No ESP-IDF required for x86 builds.
+Compiles with g++ on Linux and mingw-w64 on Windows. ESP32 build via ESP-IDF v5+.
 
 Compiles with `g++` on Linux and `mingw-w64` on Windows. ESP32 build via ESP-IDF v5+.
 
