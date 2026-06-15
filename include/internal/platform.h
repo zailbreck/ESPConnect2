@@ -44,6 +44,54 @@ int platform_tcp_write(platform_socket_t sock, const uint8_t *buf, size_t n);
 void platform_tcp_set_timeout(platform_socket_t sock, int seconds);
 
 /* ------------------------------------------------------------------ */
+/*  TLS / HTTPS support                                                */
+/* ------------------------------------------------------------------ */
+
+typedef struct platform_tls_t platform_tls_t;
+
+/** Create TLS connection to host:port. Returns NULL on failure. */
+platform_tls_t *platform_tls_connect(const char *host, int port);
+
+/** Write to TLS connection. Returns bytes sent, -1 on error. */
+int platform_tls_write(platform_tls_t *tls, const uint8_t *data, size_t len);
+
+/** Read from TLS connection. Returns bytes read, 0 on close, -1 on error. */
+int platform_tls_read(platform_tls_t *tls, uint8_t *buf, size_t max_len);
+
+/** Close TLS connection and free resources */
+void platform_tls_close(platform_tls_t *tls);
+
+/* ------------------------------------------------------------------ */
+/*  HTTP/HTTPS Client                                                  */
+/* ------------------------------------------------------------------ */
+
+/** HTTP response from platform_http_request */
+typedef struct {
+    int status_code;
+    uint8_t *body;
+    size_t body_len;
+} platform_http_response_t;
+
+/**
+ * Perform an HTTPS GET request.
+ *
+ * @param host        Hostname (e.g. spclient.wg.spotify.com)
+ * @param path        URL path (e.g. /track-playback/v1/json/)
+ * @param headers     NULL-terminated array of header strings, or NULL
+ * @param timeout_sec Timeout in seconds
+ * @return Response struct (caller must free resp.body)
+ */
+platform_http_response_t platform_https_get(
+    const char *host, const char *path,
+    const char *const *headers,
+    int timeout_sec);
+
+/**
+ * Free HTTP response body.
+ */
+void platform_http_response_free(platform_http_response_t *resp);
+
+/* ------------------------------------------------------------------ */
 /*  HTTP server (for Bell zeroconf)                                     */
 /* ------------------------------------------------------------------ */
 

@@ -83,3 +83,14 @@ void platform_shannon_nonce(platform_shannon_t *s, const uint8_t *n, size_t nl) 
 void platform_shannon_encrypt(platform_shannon_t *s, uint8_t *b, size_t l) { (void)s; (void)b; (void)l; }
 void platform_shannon_decrypt(platform_shannon_t *s, uint8_t *b, size_t l) { (void)s; (void)b; (void)l; }
 void platform_shannon_finish(platform_shannon_t *s, uint8_t m[4]) { (void)s; memset(m, 0, 4); }
+
+/* --- TLS / HTTPS (stub) --- */
+platform_tls_t *platform_tls_connect(const char *host, int port) { (void)host; (void)port; return NULL; }
+int platform_tls_write(platform_tls_t *tls, const uint8_t *data, size_t len) { (void)tls; (void)data; (void)len; return -1; }
+int platform_tls_read(platform_tls_t *tls, uint8_t *buf, size_t max_len) { (void)tls; (void)buf; (void)max_len; return -1; }
+void platform_tls_close(platform_tls_t *tls) { (void)tls; }
+platform_http_response_t platform_https_get(const char *host, const char *path, const char *const *headers, int to) {
+    (void)host; (void)path; (void)headers; (void)to;
+    platform_http_response_t r = {0, NULL, 0}; return r;
+}
+void platform_http_response_free(platform_http_response_t *resp) { (void)resp; }

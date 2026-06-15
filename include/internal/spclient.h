@@ -1,62 +1,146 @@
-// spclient.h — Spotify Web API Client Interface
-// ================================================
-// OAuth2 token + storage-resolve + CDN download API.
+// spclient.h — Spotify Internal API Client (HTTP + Mercury)
+// ==========================================================
+// Full pipeline: client token → track metadata → file ID →
+// CDN resolution → audio download.
 //
 // Sources & References:
-//   OAuth2 flow:      Spotify Web API docs — https://developer.spotify.com/documentation/web-api
-//                     librespot (MIT) — core/src/oauth2.rs
-//   Storage-resolve:  librespot (MIT) — core/src/spclient.rs
+//   Client token:     librespot (MIT) — core/src/token.rs
+//                     https://github.com/librespot-org/librespot/blob/dev/core/src/token.rs
+//   SpClient HTTP:    librespot (MIT) — core/src/spclient.rs
 //                     https://github.com/librespot-org/librespot/blob/dev/core/src/spclient.rs
-//   CDN download:     librespot (MIT) — audio/src/fetch.rs
+//   CDN fetch:        librespot (MIT) — audio/src/fetch.rs
 //                     https://github.com/librespot-org/librespot/blob/dev/audio/src/fetch.rs
+//   AudioKey:         librespot (MIT) — core/src/audio_key.rs
+//   Track metadata:   Spotify internal API (undocumented)
 //
-// License: MIT — derived from librespot & Spotify Web API docs
+// License: MIT — derived from librespot
 
 #ifndef SPOTIFY_SPCLIENT_H
 #define SPOTIFY_SPCLIENT_H
 
-#include "esp_spotify.h"
+#include "internal/mercury.h"
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* ------------------------------------------------------------------ */
+/*  Client Token                                                       */
+/* ------------------------------------------------------------------ */
 
 /**
- * @brief Get an OAuth2 token using Client Credentials flow
+ * @brief Request a client token via Mercury.
  *
- * POST https://accounts.spotify.com/api/token
- * Authorization: Basic base64(client_id:client_secret)
- * grant_type=client_credentials
+ * Sends a request to hm://keymaster/client/token over the existing
+ * Mercury session. The response is parsed and stored in token_out.
  *
- * @param client_id Spotify App Client ID
- * @param client_secret Spotify App Client Secret
- * @param token Output buffer for access token (must be at least 512 bytes)
- * @param token_size Size of output buffer
+ * @param sess       Authenticated Mercury session
+ * @param token_out  Output buffer for token (owned by caller)
+ * @param token_size Size of token_out buffer
  * @return 0 on success, negative on error
  */
-int spclient_get_oauth_token(const char *client_id, const char *client_secret,
-                             char *token, size_t token_size);
+int spclient_get_client_token(mercury_session_t *sess,
+                              char *token_out, size_t token_size);
+
+/* ------------------------------------------------------------------ */
+/*  Track Metadata                                                     */
+/* ------------------------------------------------------------------ */
+
+#define SPCLIENT_FILE_ID_SIZE 20  /* hex string length */
+
+typedef struct {
+    char file_id_hex[SPCLIENT_FILE_ID_SIZE + 1];  /* 20-char hex string */
+    char format[8];   /* "OGG_VORBIS_96", "OGG_VORBIS_160", "OGG_VORBIS_320", "AAC_24" etc */
+} spclient_file_t;
+
+typedef struct {
+    spclient_file_t *files;
+    int num_files;
+} spclient_track_meta_t;
 
 /**
- * @brief Resolve CDN URL via Spotify storage-resolve API
+ * @brief Fetch track metadata from spclient (audio file IDs).
  *
- * GET https://api.spotify.com/v1/storage-resolve/files/audio/interactive/{fileId}?alt=json&product=9
+ * GET https://spclient.wg.spotify.com/metadata/4/track/{track_id_hex}
+ * Requires Authorization: Bearer {client_token}
  *
- * @param access_token OAuth2 Bearer token
- * @param file_id File ID as hex string (e.g., "844ecdb297a87ebfee4399f28892ef85d9ba725f")
- * @param cdn_info Output CDN info structure
+ * @param client_token  Client token from spclient_get_client_token()
+ * @param track_id     16-byte binary track ID
+ * @param meta_out      Output structure (caller must free with spclient_free_track_meta)
  * @return 0 on success, negative on error
  */
-int spclient_resolve_storage(const char *access_token, const char *file_id,
-                             esp_spotify_cdn_info_t *cdn_info);
+int spclient_get_track_metadata(const char *client_token,
+                                const uint8_t track_id[16],
+                                spclient_track_meta_t *meta_out);
+
+/** Free track metadata */
+void spclient_free_track_meta(spclient_track_meta_t *meta);
+
+/* ------------------------------------------------------------------ */
+/*  CDN Resolution                                                     */
+/* ------------------------------------------------------------------ */
 
 /**
- * @brief Download audio data from CDN URL with range request
+ * @brief Resolve CDN URL for an audio file.
  *
- * @param cdn_url CDN URL from storage-resolve
- * @param offset Byte offset
- * @param length Number of bytes to read
- * @param buffer Output buffer
- * @param buffer_size Buffer capacity
- * @return Number of bytes read, negative on error
+ * GET https://spclient.wg.spotify.com/storage-resolve/files/audio/interactive/{file_id_hex}
+ *
+ * @param client_token   Client token
+ * @param file_id_hex    20-char hex file ID from track metadata
+ * @param cdn_url_out    Output CDN URL buffer (caller owns, minimum 1024 bytes)
+ * @param url_size       Size of cdn_url_out buffer
+ * @return 0 on success, negative on error
  */
-int spclient_download_audio(const char *cdn_url, size_t offset, size_t length,
+int spclient_resolve_cdn_url(const char *client_token,
+                             const char *file_id_hex,
+                             char *cdn_url_out, size_t url_size);
+
+/* ------------------------------------------------------------------ */
+/*  CDN Audio Download                                                 */
+/* ------------------------------------------------------------------ */
+
+/**
+ * @brief Download audio data via HTTP Range request.
+ *
+ * GET {cdn_url} with header "Range: bytes={offset}-{offset+length-1}"
+ *
+ * @param cdn_url      Full CDN URL from spclient_resolve_cdn_url()
+ * @param offset       Byte offset in file
+ * @param length       Number of bytes to download
+ * @param buffer       Output buffer (caller owns)
+ * @param buffer_size  Size of buffer
+ * @return Bytes downloaded on success, negative on error
+ */
+int spclient_download_audio(const char *cdn_url,
+                            size_t offset, size_t length,
                             uint8_t *buffer, size_t buffer_size);
+
+/* ------------------------------------------------------------------ */
+/*  AudioKey Request (via Mercury)                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * @brief Request AudioKey (AES-128 key) for a track+file via Mercury.
+ *
+ * Sends AUDIO_KEY_REQUEST_COMMAND (0x0C) over Mercury and waits
+ * for AUDIO_KEY_SUCCESS_RESPONSE (0x0D).
+ *
+ * @param sess       Authenticated Mercury session
+ * @param track_id   16-byte binary track ID
+ * @param file_id    16-byte binary file ID (from track metadata, hex-decoded)
+ * @param key_out    Output: 16-byte AES key
+ * @return 0 on success, negative on error
+ */
+int spclient_get_audio_key(mercury_session_t *sess,
+                           const uint8_t track_id[16],
+                           const uint8_t file_id[16],
+                           uint8_t key_out[16]);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* SPOTIFY_SPCLIENT_H */

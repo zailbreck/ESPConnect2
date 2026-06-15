@@ -603,3 +603,154 @@ void platform_shannon_finish(platform_shannon_t *s, uint8_t mac[4]) {
     shannon_cycle(s);
     WORD2BYTE(s->sbuf, mac);
 }
+
+/* ================================================================== */
+/*  TLS / HTTPS (OpenSSL)                                              */
+/* ================================================================== */
+
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+
+struct platform_tls_t {
+    SSL *ssl;
+    SSL_CTX *ctx;
+    int sock;
+};
+
+platform_tls_t *platform_tls_connect(const char *host, int port) {
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) return NULL;
+
+    struct timeval tv = {10, 0};
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    struct hostent *h = gethostbyname(host);
+    if (!h) { close(sock); return NULL; }
+
+    struct sockaddr_in addr = {0};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    memcpy(&addr.sin_addr, h->h_addr, h->h_length);
+
+    if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        close(sock); return NULL;
+    }
+
+    SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
+    if (!ctx) { close(sock); return NULL; }
+    SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3);
+
+    SSL *ssl = SSL_new(ctx);
+    if (!ssl) { SSL_CTX_free(ctx); close(sock); return NULL; }
+
+    SSL_set_fd(ssl, sock);
+    SSL_set_tlsext_host_name(ssl, host);
+
+    if (SSL_connect(ssl) != 1) {
+        SSL_free(ssl); SSL_CTX_free(ctx); close(sock); return NULL;
+    }
+
+    platform_tls_t *tls = malloc(sizeof(*tls));
+    tls->ssl = ssl;
+    tls->ctx = ctx;
+    tls->sock = sock;
+    return tls;
+}
+
+int platform_tls_write(platform_tls_t *tls, const uint8_t *data, size_t len) {
+    if (!tls || !tls->ssl) return -1;
+    return SSL_write(tls->ssl, data, (int)len);
+}
+
+int platform_tls_read(platform_tls_t *tls, uint8_t *buf, size_t max_len) {
+    if (!tls || !tls->ssl) return -1;
+    int n = SSL_read(tls->ssl, buf, (int)max_len);
+    return n > 0 ? n : (n == 0 ? 0 : -1);
+}
+
+void platform_tls_close(platform_tls_t *tls) {
+    if (!tls) return;
+    if (tls->ssl) {
+        SSL_shutdown(tls->ssl);
+        SSL_free(tls->ssl);
+    }
+    if (tls->ctx) SSL_CTX_free(tls->ctx);
+    if (tls->sock >= 0) close(tls->sock);
+    free(tls);
+}
+
+platform_http_response_t platform_https_get(
+    const char *host, const char *path,
+    const char *const *headers,
+    int timeout_sec)
+{
+    platform_http_response_t resp = {0, NULL, 0};
+
+    platform_tls_t *tls = platform_tls_connect(host, 443);
+    if (!tls) return resp;
+
+    /* Build HTTP request */
+    char req[4096];
+    int req_len = snprintf(req, sizeof(req),
+        "GET %s HTTP/1.1\r\n"
+        "Host: %s\r\n"
+        "User-Agent: ESPConnect/1.0\r\n"
+        "Accept: */*\r\n"
+        "Connection: close\r\n",
+        path, host);
+
+    /* Add custom headers */
+    if (headers) {
+        for (int i = 0; headers[i]; i++) {
+            req_len += snprintf(req + req_len, sizeof(req) - req_len,
+                               "%s\r\n", headers[i]);
+        }
+    }
+    req_len += snprintf(req + req_len, sizeof(req) - req_len, "\r\n");
+
+    if (platform_tls_write(tls, (uint8_t *)req, req_len) != req_len) {
+        platform_tls_close(tls);
+        return resp;
+    }
+
+    /* Read response */
+    uint8_t buf[8192];
+    int total = 0;
+    int n;
+    while ((n = platform_tls_read(tls, buf + total, sizeof(buf) - total - 1)) > 0) {
+        total += n;
+        if (total >= (int)sizeof(buf) - 1) break;
+    }
+    buf[total] = 0;
+    platform_tls_close(tls);
+
+    /* Parse HTTP response */
+    if (total < 12) return resp;
+
+    /* Parse status line: "HTTP/1.1 200 OK\r\n..." */
+    int code = 0;
+    if (sscanf((char *)buf, "HTTP/%*s %d", &code) != 1) return resp;
+    resp.status_code = code;
+
+    /* Find body (after \r\n\r\n) */
+    char *body_start = strstr((char *)buf, "\r\n\r\n");
+    if (!body_start) return resp;
+    body_start += 4;
+
+    size_t body_len = total - (body_start - (char *)buf);
+    resp.body = malloc(body_len + 1);
+    memcpy(resp.body, body_start, body_len);
+    resp.body[body_len] = 0;
+    resp.body_len = body_len;
+
+    return resp;
+}
+
+void platform_http_response_free(platform_http_response_t *resp) {
+    if (resp && resp->body) {
+        free(resp->body);
+        resp->body = NULL;
+        resp->body_len = 0;
+    }
+}
