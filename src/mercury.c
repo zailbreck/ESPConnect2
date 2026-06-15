@@ -483,7 +483,6 @@ int mercury_login5(mercury_session_t *s,
     ret = tcp_send_packet(s->sock, prefix, 2,
                           ch_proto.data, ch_proto.size,
                           hello_pkt, &hello_pkt_len);
-    pb_free(&ch_proto);
 
     if (ret != 0) {
         fprintf(stderr, "[%s] ClientHello send fail\n", TAG);
@@ -557,6 +556,7 @@ int mercury_login5(mercury_session_t *s,
                            ch_proto.data, ch_proto.size,  /* proto only, NOT wire packet */
                            ar_buf, ar_len,     /* [4B len][ar_proto] */
                            challenge);
+    pb_free(&ch_proto);
 
     uint8_t send_key[32], recv_key[32];
     memcpy(send_key, challenge + 20, 32);
