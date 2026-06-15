@@ -67,7 +67,7 @@ static size_t url_decode(const char *src, size_t src_len, char *dst, size_t dst_
 
 /* Extract query param value */
 static char *get_query_param(const char *query, const char *key) {
-    static char val_buf[512];
+    static char val_buf[4096];
     size_t qlen = strlen(query);
     size_t klen = strlen(key);
 
@@ -123,13 +123,16 @@ static int process_blob(const char *blob_b64, const char *username,
     size_t encrypted_len = blob_len - 16 - 20;
     uint8_t *checksum = blob + blob_len - 20;
 
-    /* Step 2: Derive keys from shared secret */
+    /* Step 2: Derive keys from shared secret
+     * V13: sha1Buf(sharedSecret.data(), sharedSecret.size(), baseKey)
+     *      hmacSha1(baseKey, 16, ...) ← only 16 bytes as HMAC key! */
     uint8_t base_key[20];
     platform_sha1(shared_secret, secret_len, base_key);
 
     uint8_t checksum_key[20], encryption_key[20];
-    platform_hmac_sha1(base_key, 20, (const uint8_t *)"checksum", 8, checksum_key);
-    platform_hmac_sha1(base_key, 20, (const uint8_t *)"encryption", 10, encryption_key);
+    /* V13 uses only 16 bytes of base_key as HMAC key (not full 20!) */
+    platform_hmac_sha1(base_key, 16, (const uint8_t *)"checksum", 8, checksum_key);
+    platform_hmac_sha1(base_key, 16, (const uint8_t *)"encryption", 10, encryption_key);
 
     /* Verify MAC */
     uint8_t computed_mac[20];
@@ -167,7 +170,8 @@ static int process_blob(const char *blob_b64, const char *username,
     }
     fprintf(stderr, "[%s] Inner blob: %zu bytes\n", TAG, inner_len);
 
-    /* Step 4: Derive AES-192-ECB key via PBKDF2 */
+    /* Step 4: Derive AES-192-ECB key via PBKDF2
+     * V13: SHA1(device_id) → PBKDF2(SHA1, username, 256) → SHA1 → + 0x00000014 */
     uint8_t secret[20];
     platform_sha1((const uint8_t *)device_id, strlen(device_id), secret);
 
@@ -186,6 +190,10 @@ static int process_blob(const char *blob_b64, const char *username,
     ecb_key[22] = 0x00;
     ecb_key[23] = 0x14;
 
+    fprintf(stderr, "[%s] DEBUG ECB key=", TAG);
+    for (int _i = 0; _i < 24; _i++) fprintf(stderr, "%02x", ecb_key[_i]);
+    fprintf(stderr, "\n");
+
     /* Step 5: AES-192-ECB decrypt */
     /* Pad to 16-byte boundary if needed */
     size_t padded_len = inner_len;
@@ -195,48 +203,64 @@ static int process_blob(const char *blob_b64, const char *username,
         memset(inner_blob + inner_len, 0, padded_len - inner_len);
     }
     platform_aes_ecb_decrypt192(ecb_key, inner_blob, padded_len);
+    {
+        fprintf(stderr, "[%s] DEBUG after-ECB first32=", TAG);
+        for (size_t _di = 0; _di < 32 && _di < inner_len; _di++) fprintf(stderr, "%02x", inner_blob[_di]);
+        fprintf(stderr, "\n");
+    }
 
     /* Step 6: XOR post-processing */
     for (size_t i = 0; i < inner_len && i + 16 < inner_len; i++) {
         inner_blob[inner_len - i - 1] ^= inner_blob[inner_len - i - 17];
     }
+    {
+        fprintf(stderr, "[%s] DEBUG after-XOR first32=", TAG);
+        for (size_t _di = 0; _di < 32 && _di < inner_len; _di++)
+            fprintf(stderr, "%02x", inner_blob[_di]);
+        fprintf(stderr, "\n");
+    }
 
-    /* Step 7: Protobuf parse */
-    /* Format: [0x0a][varint:uname_len][username][0x10][varint:authType]
-     *          [0x1a][varint:authData_len][authData] */
+    /* Step 7: Protobuf parse — V13 style: always advance pos */
     size_t pos = 0;
 
-    /* Field 1: username (optional confirmation) */
-    if (pos < inner_len && inner_blob[pos] == 0x0a) {
-        pos++;
-        uint32_t name_len = read_varint(inner_blob, &pos, inner_len);
-        pos += name_len; /* skip username bytes */
+    /* Field 1: username */
+    if (pos >= inner_len) { free(inner_blob); return -4; }
+    uint8_t f1_tag = inner_blob[pos++];
+    if (f1_tag != 0x0a) {
+        fprintf(stderr, "[%s] Field1 tag 0x%02x (expected 0x0a), advancing anyway\n", TAG, f1_tag);
     }
+    uint32_t name_len = read_varint(inner_blob, &pos, inner_len);
+    fprintf(stderr, "[%s] Username length: %u\n", TAG, name_len);
+    pos += name_len; /* skip username bytes */
 
     /* Field 2: authType */
-    if (pos < inner_len && inner_blob[pos] == 0x10) {
-        pos++;
-        uint32_t at = read_varint(inner_blob, &pos, inner_len);
-        *auth_type = (int)at;
-        fprintf(stderr, "[%s] AuthType: %d\n", TAG, *auth_type);
+    if (pos >= inner_len) { free(inner_blob); return -4; }
+    uint8_t f2_tag = inner_blob[pos++];
+    if (f2_tag != 0x10) {
+        fprintf(stderr, "[%s] Field2 tag 0x%02x (expected 0x10), continuing\n", TAG, f2_tag);
     }
+    uint32_t at = read_varint(inner_blob, &pos, inner_len);
+    *auth_type = (int)at;
+    fprintf(stderr, "[%s] AuthType: %d\n", TAG, *auth_type);
 
     /* Field 3: authData */
-    if (pos < inner_len && inner_blob[pos] == 0x1a) {
-        pos++;
-        uint32_t ad_len = read_varint(inner_blob, &pos, inner_len);
-        fprintf(stderr, "[%s] AuthData length: %u bytes\n", TAG, ad_len);
+    if (pos >= inner_len) { free(inner_blob); return -4; }
+    uint8_t f3_tag = inner_blob[pos++];
+    if (f3_tag != 0x1a) {
+        fprintf(stderr, "[%s] Field3 tag 0x%02x (expected 0x1a)\n", TAG, f3_tag);
+    }
+    uint32_t ad_len = read_varint(inner_blob, &pos, inner_len);
+    fprintf(stderr, "[%s] AuthData length: %u bytes\n", TAG, ad_len);
 
-        if (pos + ad_len <= inner_len) {
-            platform_base64_encode(inner_blob + pos, ad_len,
-                                   auth_data_b64, auth_b64_size);
-            fprintf(stderr, "[%s] AuthData (b64): %s\n", TAG, auth_data_b64);
-            free(inner_blob);
-            return 0;
-        }
+    if (pos + ad_len <= inner_len) {
+        platform_base64_encode(inner_blob + pos, ad_len,
+                               auth_data_b64, auth_b64_size);
+        fprintf(stderr, "[%s] AuthData (b64): %s\n", TAG, auth_data_b64);
+        free(inner_blob);
+        return 0;
     }
 
-    fprintf(stderr, "[%s] WARNING: protobuf parse incomplete\n", TAG);
+    fprintf(stderr, "[%s] WARNING: authData exceeds blob\n", TAG);
     free(inner_blob);
     return -4;
 }
@@ -340,19 +364,41 @@ static int bell_handle_request(zeroconf_session_t *s, platform_socket_t client) 
     }
 
     if (strcmp(method, "POST") == 0 && strstr(path_only, "/spotify_info")) {
+        /* Extract Content-Length and read full body (Windows recv may split) */
+        const char *cl_hdr = strstr(req, "Content-Length:");
+        if (cl_hdr) {
+            int expected_len = atoi(cl_hdr + 15);
+            const char *bs = strstr(req, "\r\n\r\n");
+            if (bs) {
+                int hdr_end = (int)(bs - req) + 4;
+                int body_got = n - hdr_end;
+                while (body_got < expected_len && body_got >= 0) {
+                    int more = platform_http_server_read(client,
+                        buf + n, (int)(sizeof(buf) - 1 - n));
+                    if (more <= 0) break;
+                    n += more; buf[n] = 0; body_got += more;
+                }
+            }
+        }
+
         /* Extract body from HTTP request */
         const char *body_start = strstr(req, "\r\n\r\n");
         if (!body_start) return -1;
         body_start += 4;
 
-        char *u = get_query_param(body_start, "userName");
+        char *u = NULL, *b = NULL, *c = NULL;
+        
+        /* CRITICAL: get_query_param uses static buffer — must copy immediately */
+        u = get_query_param(body_start, "userName");
         if (!u) u = get_query_param(body_start, "username");
-        char *b = get_query_param(body_start, "blob");
-        char *c = get_query_param(body_start, "clientKey");
-
         if (u) strncpy(s->username, u, sizeof(s->username) - 1);
+        
+        b = get_query_param(body_start, "blob");
         if (b) strncpy(s->blob_b64, b, sizeof(s->blob_b64) - 1);
+        
+        c = get_query_param(body_start, "clientKey");
         if (c) strncpy(s->client_key_b64, c, sizeof(s->client_key_b64) - 1);
+
 
         if (s->username[0] && s->blob_b64[0] && s->client_key_b64[0]) {
             fprintf(stderr, "\n[%s] *** Credentials POST received! ***\n", TAG);
@@ -441,7 +487,7 @@ int zeroconf_start(zeroconf_session_t *session) {
         };
         platform_mdns_register_service(session->mdns,
                                        session->device_name,
-                                       "_spotify-connect._tcp",
+                                       "_spotify-connect._tcp.local",
                                        session->bell_port,
                                        txt);
     }
@@ -486,6 +532,11 @@ int zeroconf_get_credentials(zeroconf_session_t *session,
     uint8_t shared_secret[96];
     platform_dh_compute_shared(session->dh_private, client_key_bin, ck_len,
                                shared_secret);
+
+    /* DEBUG: print key lengths and shared secret first bytes */
+    for (int i = 0; i < 8; i++) fprintf(stderr, "%02x", session->dh_private[i]);
+    for (int i = 0; i < 8; i++) fprintf(stderr, "%02x", shared_secret[i]);
+    fprintf(stderr, "\n");
 
     /* Decrypt the blob */
     char auth_data_b64[4096] = {0};

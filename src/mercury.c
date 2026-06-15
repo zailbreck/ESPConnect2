@@ -24,7 +24,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
 #include <arpa/inet.h>
+#endif
 
 #define TAG "mercury"
 
@@ -219,6 +224,7 @@ static void build_client_hello(pb_buf_t *out,
 
 /* ClientResponsePlaintext: matches librespot compute_keys + client_response */
 static void build_client_resp(pb_buf_t *out, const uint8_t hmac[20]) {
+    /* Matches cspot standalone mkCR: flat structure, no double-nesting */
     pb_init(out, 128);
     pb_buf_t dh; pb_init(&dh, 32);
     pb_bytes(&dh, 10, hmac, 20);
@@ -227,19 +233,15 @@ static void build_client_resp(pb_buf_t *out, const uint8_t hmac[20]) {
     pb_bytes(&resp, 10, dh.data, dh.size);
     pb_free(&dh);
 
-    pb_buf_t crp; pb_init(&crp, 128);
-    pb_bytes(&crp, 10, resp.data, resp.size);   /* login_crypto_response */
-    pb_bytes(&crp, 20, NULL, 0);                /* empty challenge + pow + crypto challenge fields */
-    pb_bytes(&crp, 30, NULL, 0);
+    /* ClientResponse = login_crypto_response + empty padding fields */
+    pb_bytes(out, 0x0a, resp.data, resp.size);
+    pb_bytes(out, 0x14, NULL, 0);
+    pb_bytes(out, 0x1e, NULL, 0);
 
-    pb_bytes(out, 10, crp.data, crp.size);       /* wrap as APChallenge */
-    pb_bytes(out, 20, NULL, 0);
-    pb_bytes(out, 30, NULL, 0);
-
-    pb_free(&dh); pb_free(&resp); pb_free(&crp);
+    pb_free(&resp);
 }
 
-/* LoginRequest: uses CORRECT cspot nanopb field numbers (10,20,30) */
+/* LoginRequest: matches cspot standalone mkLR exactly */
 static void build_login_request(pb_buf_t *out,
                                  const uint8_t *auth_data, size_t ad_len,
                                  int auth_type,
@@ -247,27 +249,23 @@ static void build_login_request(pb_buf_t *out,
                                  const char *device_id) {
     pb_init(out, 512);
 
-    /* login_credentials (field 10) — matches cspot nanopb:
-     *   username=10, typ=20, auth_data=30 */
+    /* login_credentials (field 0x0a=10) */
     pb_buf_t lc; pb_init(&lc, 256);
-    pb_str(&lc, 10, username);         /* username = field 10 */
-    pb_enum(&lc, 20, auth_type);       /* typ = field 20 (NOT 0x10=16!) */
-    pb_bytes(&lc, 30, auth_data, ad_len); /* auth_data = field 30 (NOT 0x12=18!) */
-    pb_bytes(out, 10, lc.data, lc.size);
+    pb_bytes(&lc, 0x0a, (const uint8_t *)username, strlen(username));
+    pb_enum(&lc, 0x10, auth_type);
+    pb_bytes(&lc, 0x12, auth_data, ad_len);
+    pb_bytes(out, 0x0a, lc.data, lc.size);
     pb_free(&lc);
 
-    /* system_info (field 50) — matches cspot:
-     *   cpu_family=10, os=60, system_info_string=90, device_id=100 */
+    /* system_info (field 0x14=20), cpu=2(CPU_X86), os=0(OS_UNKNOWN) */
     pb_buf_t si; pb_init(&si, 128);
-    pb_enum(&si, 10, 0);                          /* cpu_family = CPU_UNKNOWN */
-    pb_enum(&si, 60, 0);                          /* os = OS_LINUX */
-    pb_str(&si, 90, "ESPConnect");                /* system_info_string */
-    pb_str(&si, 100, device_id);                  /* device_id */
-    pb_bytes(out, 50, si.data, si.size);
+    pb_enum(&si, 0x0a, 2);
+    pb_enum(&si, 0x14, 0);
+    pb_bytes(out, 0x14, si.data, si.size);
     pb_free(&si);
 
-    /* version_string (field 70) */
-    pb_str(out, 70, "ESPConnect-1.0");
+    /* device_id (field 0x1e=30) — top-level, NOT inside system_info */
+    pb_bytes(out, 0x1e, (const uint8_t *)device_id, strlen(device_id));
 }
 
 /* ================================================================== */
@@ -287,12 +285,12 @@ static void compute_auth_challenge(
     memcpy(cb, hello_pkt, hello_pkt_len);
     memcpy(cb + hello_pkt_len, ap_resp, ap_resp_len);
 
-    /* 5 rounds: HMAC-SHA1(shared, cb + [x]) — x at END matches cspot */
+    /* 5 rounds: HMAC-SHA1(shared, [x] + cb) — x at BEGINNING matches cspot */
     uint8_t *dst = result_out;
     for (int x = 1; x < 6; x++) {
         uint8_t *cv = malloc(cb_len + 1);
-        memcpy(cv, cb, cb_len);
-        cv[cb_len] = (uint8_t)x;  /* x at END */
+        cv[0] = (uint8_t)x;  /* x at FRONT — matches standalone cv.insert(cv.begin(), x) */
+        memcpy(cv + 1, cb, cb_len);
         platform_hmac_sha1(shared, shared_len, cv, cb_len + 1, dst);
         free(cv);
         dst += 20;
@@ -359,14 +357,14 @@ static int tcp_send_packet(platform_socket_t sock,
                            const uint8_t *prefix, size_t prefix_len,
                            const uint8_t *data, size_t data_len,
                            uint8_t *full_pkt_out, size_t *full_len_out) {
-    /* Packet format: [4B BE len] [prefix] [data] */
+    /* Packet format: [prefix][4B BE len][data] — matches standalone spkt */
     uint32_t total = (uint32_t)(4 + prefix_len + data_len);
-    size_t full_len = (size_t)total;
+    size_t full_len = prefix_len + 4 + data_len;
     uint8_t *pkt = malloc(full_len);
 
-    write_be32(pkt, total);
-    if (prefix_len) memcpy(pkt + 4, prefix, prefix_len);
-    if (data_len) memcpy(pkt + 4 + prefix_len, data, data_len);
+    if (prefix_len) memcpy(pkt, prefix, prefix_len);
+    write_be32(pkt + prefix_len, total);
+    if (data_len) memcpy(pkt + prefix_len + 4, data, data_len);
 
     int ret = platform_tcp_write(sock, pkt, full_len);
 
@@ -402,13 +400,12 @@ static int tcp_recv_packet(platform_socket_t sock,
 
 static void shannon_init(platform_shannon_t *snd, platform_shannon_t *rcv,
                          const uint8_t *sk, const uint8_t *rk) {
-    uint8_t znonce[4] = {0};
-
+    /* Only load keys — nonce will be set by mercury_send/recv before first use */
+    /* Calling nonce here would be idempotent BUT CRC carries over from the
+       first nonce call, making the second nonce(0) in mercury_send produce a
+       DIFFERENT state than the standalone which calls nonce(0) only once. */
     platform_shannon_key(snd, sk, 32);
-    platform_shannon_nonce(snd, znonce, 4);
-
     platform_shannon_key(rcv, rk, 32);
-    platform_shannon_nonce(rcv, znonce, 4);
 }
 
 /* ================================================================== */
@@ -438,10 +435,19 @@ int mercury_login5(mercury_session_t *s,
     size_t ar_len = 0;
     int ret;
 
-    /* ---------- Decode auth data ---------- */
+    /* ---------- Decode auth data (URL-safe base64: - → +, _ → /) ---------- */
     uint8_t auth_data[2048];
-    size_t ad_len = platform_base64_decode(auth_data_b64,
-        strlen(auth_data_b64), auth_data, sizeof(auth_data));
+    char b64_buf[2048];
+    size_t b64_len = strlen(auth_data_b64);
+    if (b64_len >= sizeof(b64_buf)) b64_len = sizeof(b64_buf) - 1;
+    memcpy(b64_buf, auth_data_b64, b64_len);
+    b64_buf[b64_len] = '\0';
+    for (size_t i = 0; i < b64_len; i++) {
+        if (b64_buf[i] == '-') b64_buf[i] = '+';
+        if (b64_buf[i] == '_') b64_buf[i] = '/';
+    }
+    size_t ad_len = platform_base64_decode(b64_buf,
+        b64_len, auth_data, sizeof(auth_data));
     if (ad_len < 10) {
         fprintf(stderr, "[%s] Bad auth data\n", TAG);
         return -2;
@@ -568,6 +574,11 @@ int mercury_login5(mercury_session_t *s,
     pb_buf_t lr_buf;
     build_login_request(&lr_buf, auth_data, ad_len, auth_type,
                         username, device_id);
+
+    fprintf(stderr, "[%s] LoginReq sz=%zu hex=", TAG, lr_buf.size);
+    for (size_t i = 0; i < lr_buf.size && i < 80; i++)
+        fprintf(stderr, "%02x", lr_buf.data[i]);
+    fprintf(stderr, "\n");
 
     ret = mercury_send(s, MERCURY_CMD_LOGIN, lr_buf.data, lr_buf.size);
     pb_free(&lr_buf);

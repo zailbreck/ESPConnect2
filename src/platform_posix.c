@@ -26,6 +26,7 @@
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 #include <openssl/sha.h>
+#include <openssl/aes.h>
 #include <openssl/bn.h>
 #include <openssl/dh.h>
 #include <openssl/rand.h>
@@ -242,6 +243,13 @@ void platform_aes_ctr128(const uint8_t *key, const uint8_t *iv,
     int out_len = 0;
     EVP_EncryptUpdate(ctx, data, &out_len, data, (int)len);
     EVP_CIPHER_CTX_free(ctx);
+}
+
+void platform_aes_ecb_decrypt128(const uint8_t *key, uint8_t *data, size_t len) {
+    AES_KEY aes_key;
+    AES_set_decrypt_key(key, 128, &aes_key);
+    for (size_t off = 0; off < len; off += 16)
+        AES_ecb_encrypt(data + off, data + off, &aes_key, AES_DECRYPT);
 }
 
 void platform_aes_ecb_decrypt192(const uint8_t *key, uint8_t *data, size_t len) {
@@ -514,6 +522,35 @@ void platform_shannon_key(platform_shannon_t *s, const uint8_t *key, size_t key_
     shannon_genkonst(s);
     shannon_save_state(s);
     s->nbuf = 0;
+}
+
+void platform_shannon_key_pair(platform_shannon_t *snd, platform_shannon_t *rcv,
+                                const uint8_t *send_key, const uint8_t *recv_key) {
+    /* Matches cspot standalone Shannon::key(sk, rk) exactly:
+     *   init → loadkey(sk) → saveState → genkonst → loadkey(rk) → [recv]
+     *                       → restore → genkonst → loadkey(sk) → [send]
+     * The shared genkonst() between loadkey calls makes send/recv states
+     * different from loading each key independently from init(). */
+    shannon_init_state(snd);
+    shannon_load_key(snd, send_key, 32);
+    shannon_save_state(snd);
+    shannon_genkonst(snd);
+    shannon_load_key(snd, recv_key, 32);
+    /* Save recv state */
+    memcpy(rcv->R, snd->R, sizeof(rcv->R));
+    memcpy(rcv->CRC, snd->CRC, sizeof(rcv->CRC));
+    rcv->konst = snd->konst;
+    rcv->sbuf = snd->sbuf;
+    shannon_save_state(rcv);
+    rcv->nbuf = 0;
+
+    /* Restore to after loadkey(sk) for send */
+    shannon_reload_state(snd);
+    snd->konst = SHANNON_INITKONST;
+    shannon_genkonst(snd);
+    shannon_load_key(snd, send_key, 32);
+    shannon_save_state(snd);
+    snd->nbuf = 0;
 }
 
 void platform_shannon_nonce(platform_shannon_t *s, const uint8_t *nonce, size_t nonce_len) {

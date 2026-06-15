@@ -406,84 +406,135 @@ size_t platform_base64_encode(const uint8_t *in, size_t in_len,
     return (ret == 0) ? olen : 0;
 }
 
-/* ================================================================== */
-/*  Shannon Stream Cipher (pure C — identical to POSIX)                 */
-/*  Source: cspot (MIT) — Shannon.cpp                                  */
-/* ================================================================== */
-
 #define SHANNON_N       16
+#define SHANNON_FOLD    16
 #define SHANNON_INITKONST 0x6996c53a
-#define SHANNON_KEYP    13
-
-/* Rotation macro: standard (cspot Shannon.cpp uses rotl) */
-static inline uint32_t sh_rotl(uint32_t i, int distance) {
-    return (i << distance) | (i >> (32 - distance));
-}
+#define SHANNON_KEYP     13
 
 struct platform_shannon_t {
-    uint32_t R[SHANNON_N];
-    uint32_t CRC[SHANNON_N];
+    uint32_t R[16];
+    uint32_t CRC[16];
+    uint32_t initR[16];
+    uint32_t konst;
     uint32_t sbuf;
     uint32_t mbuf;
     int nbuf;
 };
 
+static inline uint32_t rotl32(uint32_t n, unsigned int c) {
+    c &= 31;
+    return (n << c) | (n >> (32 - c));
+}
+
+static inline uint32_t sbox1(uint32_t w) {
+    w ^= rotl32(w, 5) | rotl32(w, 7);
+    w ^= rotl32(w, 19) | rotl32(w, 22);
+    return w;
+}
+
+static inline uint32_t sbox2(uint32_t w) {
+    w ^= rotl32(w, 7) | rotl32(w, 22);
+    w ^= rotl32(w, 5) | rotl32(w, 19);
+    return w;
+}
+
+#define BYTE2WORD(b) \
+    (((uint32_t)(b)[3] << 24) | ((uint32_t)(b)[2] << 16) | \
+     ((uint32_t)(b)[1] << 8)  | ((uint32_t)(b)[0]))
+
+#define WORD2BYTE(w, b) do { \
+    (b)[3] = (uint8_t)((w) >> 24); \
+    (b)[2] = (uint8_t)((w) >> 16); \
+    (b)[1] = (uint8_t)((w) >> 8);  \
+    (b)[0] = (uint8_t)(w);        \
+} while(0)
+
+#define XORWORD(w, b) do {       \
+    (b)[3] ^= (uint8_t)((w) >> 24); \
+    (b)[2] ^= (uint8_t)((w) >> 16); \
+    (b)[1] ^= (uint8_t)((w) >> 8);  \
+    (b)[0] ^= (uint8_t)(w);        \
+} while(0)
+
 static void shannon_cycle(platform_shannon_t *s) {
-    uint32_t t;
+    uint32_t t = s->R[12] ^ s->R[13] ^ s->konst;
+    t = sbox1(t) ^ rotl32(s->R[0], 1);
     int i;
-
-    t = s->R[12] ^ s->R[13] ^ SHANNON_INITKONST;
-    s->sbuf = sh_rotl(t, 1);
-
-    for (i = 0; i < SHANNON_N; i++) {
-        t = s->CRC[((i + SHANNON_N) - 1) % SHANNON_N];
-        t ^= s->R[i];
-        s->CRC[i] = t;
-        t = sh_rotl(t, 1);
-        s->CRC[i] ^= t;
-    }
-}
-
-static void shannon_macfunc(platform_shannon_t *s, uint32_t val) {
-    s->CRC[0] ^= val;
-}
-
-static void shannon_initstate(platform_shannon_t *s) {
-    int i;
-    for (i = 0; i < SHANNON_N; i++) {
-        s->R[i] = 1;
-        s->CRC[i] = 1;
-    }
-
-    s->R[SHANNON_KEYP] = s->R[SHANNON_KEYP] ^ SHANNON_INITKONST;
-    s->sbuf = 0;
-    s->mbuf = 0;
-    s->nbuf = 32;
-
     for (i = 1; i < SHANNON_N; i++)
+        s->R[i - 1] = s->R[i];
+    s->R[SHANNON_N - 1] = t;
+    t = sbox2(s->R[2] ^ s->R[15]);
+    s->R[0] ^= t;
+    s->sbuf = t ^ s->R[8] ^ s->R[12];
+}
+
+static void shannon_crcfunc(platform_shannon_t *s, uint32_t i) {
+    uint32_t t = s->CRC[0] ^ s->CRC[2] ^ s->CRC[15] ^ i;
+    int j;
+    for (j = 1; j < SHANNON_N; j++)
+        s->CRC[j - 1] = s->CRC[j];
+    s->CRC[SHANNON_N - 1] = t;
+}
+
+static void shannon_macfunc(platform_shannon_t *s, uint32_t i) {
+    shannon_crcfunc(s, i);
+    s->R[SHANNON_KEYP] ^= i;
+}
+
+static void shannon_init_state(platform_shannon_t *s) {
+    s->R[0] = 1;
+    s->R[1] = 1;
+    for (int i = 2; i < SHANNON_N; i++)
+        s->R[i] = s->R[i - 1] + s->R[i - 2];
+    s->konst = SHANNON_INITKONST;
+}
+
+static void shannon_save_state(platform_shannon_t *s) {
+    memcpy(s->initR, s->R, sizeof(s->initR));
+}
+
+static void shannon_reload_state(platform_shannon_t *s) {
+    memcpy(s->R, s->initR, sizeof(s->R));
+}
+
+static void shannon_genkonst(platform_shannon_t *s) {
+    s->konst = s->R[0];
+}
+
+static void shannon_diffuse(platform_shannon_t *s) {
+    for (int i = 0; i < SHANNON_FOLD; i++)
         shannon_cycle(s);
 }
 
-static inline void ADDKEY(platform_shannon_t *s, uint32_t k) {
-    s->R[SHANNON_KEYP] ^= k;
-    s->CRC[SHANNON_KEYP] ^= k;
-}
+#define ADDKEY(s, k) (s)->R[SHANNON_KEYP] ^= (k)
 
-static inline uint32_t BYTE2WORD(const uint8_t *b) {
-    return ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) |
-           ((uint32_t)b[2] << 8) | (uint32_t)b[3];
-}
-
-static inline void WORD2BYTE(uint32_t w, uint8_t *b) {
-    b[0] = (uint8_t)(w >> 24);
-    b[1] = (uint8_t)(w >> 16);
-    b[2] = (uint8_t)(w >> 8);
-    b[3] = (uint8_t)w;
+static void shannon_load_key(platform_shannon_t *s,
+                              const uint8_t *key, size_t key_len) {
+    size_t i;
+    int j;
+    for (i = 0; i + 3 < key_len; i += 4) {
+        uint32_t k = BYTE2WORD(&key[i]);
+        ADDKEY(s, k);
+        shannon_cycle(s);
+    }
+    if (i < key_len) {
+        uint8_t xtra[4] = {0, 0, 0, 0};
+        for (j = 0; i < key_len; i++, j++)
+            xtra[j] = key[i];
+        uint32_t k = BYTE2WORD(xtra);
+        ADDKEY(s, k);
+        shannon_cycle(s);
+    }
+    ADDKEY(s, (uint32_t)key_len);
+    shannon_cycle(s);
+    memcpy(s->CRC, s->R, sizeof(s->CRC));
+    shannon_diffuse(s);
+    for (i = 0; i < SHANNON_N; i++)
+        s->R[i] ^= s->CRC[i];
 }
 
 platform_shannon_t *platform_shannon_new(void) {
     platform_shannon_t *s = calloc(1, sizeof(*s));
-    if (s) shannon_initstate(s);
     return s;
 }
 
@@ -492,35 +543,69 @@ void platform_shannon_free(platform_shannon_t *s) {
 }
 
 void platform_shannon_key(platform_shannon_t *s, const uint8_t *key, size_t key_len) {
-    size_t i = 0;
-    while (key_len >= 4) {
-        ADDKEY(s, BYTE2WORD(key + i));
-        shannon_cycle(s);
-        i += 4;
-        key_len -= 4;
-    }
-    if (key_len) {
-        uint32_t last = 0;
-        memcpy(&last, key + i, key_len);
-        ADDKEY(s, last);
-        shannon_cycle(s);
-    }
+    shannon_init_state(s);
+    shannon_load_key(s, key, key_len);
+    shannon_genkonst(s);
+    shannon_save_state(s);
+    s->nbuf = 0;
 }
+
 
 void platform_shannon_nonce(platform_shannon_t *s, const uint8_t *nonce, size_t nonce_len) {
-    platform_shannon_key(s, nonce, nonce_len);
-    s->sbuf = 0;
+    shannon_reload_state(s);
+    s->konst = SHANNON_INITKONST;
+    shannon_load_key(s, nonce, nonce_len);
+    shannon_genkonst(s);
+    s->nbuf = 0;
 }
 
-void platform_shannon_encrypt(platform_shannon_t *s, uint8_t *buf, size_t len) {
-    platform_shannon_decrypt(s, buf, len);  /* symmetric */
+void platform_shannon_encrypt(platform_shannon_t *s, uint8_t *buf, size_t nbytes) {
+    uint8_t *endbuf;
+    /* buffered bytes */
+    while (s->nbuf && nbytes) {
+        s->mbuf ^= (*buf) << (32 - s->nbuf);
+        *buf ^= (uint8_t)(s->sbuf >> (32 - s->nbuf));
+        buf++; s->nbuf -= 8; nbytes--;
+    }
+    if (!s->nbuf && !nbytes) return;
+
+    /* whole words */
+    endbuf = &buf[nbytes & ~(size_t)3];
+    while (buf < endbuf) {
+        shannon_cycle(s);
+        uint32_t t = BYTE2WORD(buf);
+        shannon_macfunc(s, t);
+        t ^= s->sbuf;
+        WORD2BYTE(t, buf);
+        buf += 4;
+    }
+
+    /* trailing bytes */
+    nbytes &= 3;
+    if (nbytes) {
+        shannon_cycle(s);
+        s->mbuf = 0;
+        s->nbuf = 32;
+        while (s->nbuf && nbytes) {
+            s->mbuf ^= (*buf) << (32 - s->nbuf);
+            *buf ^= (uint8_t)(s->sbuf >> (32 - s->nbuf));
+            buf++; s->nbuf -= 8; nbytes--;
+        }
+    }
 }
 
-void platform_shannon_decrypt(platform_shannon_t *s, uint8_t *buf, size_t len) {
-    const uint8_t *endbuf = buf + (len & ~3);
-    size_t nbytes = len;
+void platform_shannon_decrypt(platform_shannon_t *s, uint8_t *buf, size_t nbytes) {
+    uint8_t *endbuf;
+    /* buffered bytes */
+    while (s->nbuf && nbytes) {
+        *buf ^= (uint8_t)(s->sbuf >> (32 - s->nbuf));
+        s->mbuf ^= (*buf) << (32 - s->nbuf);
+        buf++; s->nbuf -= 8; nbytes--;
+    }
+    if (!s->nbuf && !nbytes) return;
 
-    /* process full words */
+    /* whole words */
+    endbuf = &buf[nbytes & ~(size_t)3];
     while (buf < endbuf) {
         shannon_cycle(s);
         uint32_t t = BYTE2WORD(buf) ^ s->sbuf;
@@ -553,16 +638,159 @@ void platform_shannon_finish(platform_shannon_t *s, uint8_t mac[4]) {
     for (i = 0; i < SHANNON_N; i++)
         s->R[i] ^= s->CRC[i];
     shannon_diffuse(s);
+    /* produce MAC: 4 bytes from stream buffer */
     shannon_cycle(s);
     WORD2BYTE(s->sbuf, mac);
 }
 
-/* Missing from POSIX copy: diffuse function */
-static inline void shannon_diffuse(platform_shannon_t *s) {
-    int i;
-    for (i = 1; i < SHANNON_N; i++) {
-        s->R[i] ^= s->CRC[i];
-        s->CRC[i] ^= s->R[i];
+/* ================================================================== */
+/*  TLS / HTTPS (OpenSSL)                                              */
+/* ================================================================== */
+
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+
+struct platform_tls_t {
+    SSL *ssl;
+    SSL_CTX *ctx;
+    int sock;
+};
+
+platform_tls_t *platform_tls_connect(const char *host, int port) {
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) return NULL;
+
+    struct timeval tv = {10, 0};
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    struct hostent *h = gethostbyname(host);
+    if (!h) { close(sock); return NULL; }
+
+    struct sockaddr_in addr = {0};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    memcpy(&addr.sin_addr, h->h_addr, h->h_length);
+
+    if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        close(sock); return NULL;
+    }
+
+    SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
+    if (!ctx) { close(sock); return NULL; }
+    SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3);
+
+    SSL *ssl = SSL_new(ctx);
+    if (!ssl) { SSL_CTX_free(ctx); close(sock); return NULL; }
+
+    SSL_set_fd(ssl, sock);
+    SSL_set_tlsext_host_name(ssl, host);
+
+    if (SSL_connect(ssl) != 1) {
+        SSL_free(ssl); SSL_CTX_free(ctx); close(sock); return NULL;
+    }
+
+    platform_tls_t *tls = malloc(sizeof(*tls));
+    tls->ssl = ssl;
+    tls->ctx = ctx;
+    tls->sock = sock;
+    return tls;
+}
+
+int platform_tls_write(platform_tls_t *tls, const uint8_t *data, size_t len) {
+    if (!tls || !tls->ssl) return -1;
+    return SSL_write(tls->ssl, data, (int)len);
+}
+
+int platform_tls_read(platform_tls_t *tls, uint8_t *buf, size_t max_len) {
+    if (!tls || !tls->ssl) return -1;
+    int n = SSL_read(tls->ssl, buf, (int)max_len);
+    return n > 0 ? n : (n == 0 ? 0 : -1);
+}
+
+void platform_tls_close(platform_tls_t *tls) {
+    if (!tls) return;
+    if (tls->ssl) {
+        SSL_shutdown(tls->ssl);
+        SSL_free(tls->ssl);
+    }
+    if (tls->ctx) SSL_CTX_free(tls->ctx);
+    if (tls->sock >= 0) close(tls->sock);
+    free(tls);
+}
+
+platform_http_response_t platform_https_get(
+    const char *host, const char *path,
+    const char *const *headers,
+    int timeout_sec)
+{
+    platform_http_response_t resp = {0, NULL, 0};
+
+    platform_tls_t *tls = platform_tls_connect(host, 443);
+    if (!tls) return resp;
+
+    /* Build HTTP request */
+    char req[4096];
+    int req_len = snprintf(req, sizeof(req),
+        "GET %s HTTP/1.1\r\n"
+        "Host: %s\r\n"
+        "User-Agent: ESPConnect/1.0\r\n"
+        "Accept: */*\r\n"
+        "Connection: close\r\n",
+        path, host);
+
+    /* Add custom headers */
+    if (headers) {
+        for (int i = 0; headers[i]; i++) {
+            req_len += snprintf(req + req_len, sizeof(req) - req_len,
+                               "%s\r\n", headers[i]);
+        }
+    }
+    req_len += snprintf(req + req_len, sizeof(req) - req_len, "\r\n");
+
+    if (platform_tls_write(tls, (uint8_t *)req, req_len) != req_len) {
+        platform_tls_close(tls);
+        return resp;
+    }
+
+    /* Read response */
+    uint8_t buf[8192];
+    int total = 0;
+    int n;
+    while ((n = platform_tls_read(tls, buf + total, sizeof(buf) - total - 1)) > 0) {
+        total += n;
+        if (total >= (int)sizeof(buf) - 1) break;
+    }
+    buf[total] = 0;
+    platform_tls_close(tls);
+
+    /* Parse HTTP response */
+    if (total < 12) return resp;
+
+    /* Parse status line: "HTTP/1.1 200 OK\r\n..." */
+    int code = 0;
+    if (sscanf((char *)buf, "HTTP/%*s %d", &code) != 1) return resp;
+    resp.status_code = code;
+
+    /* Find body (after \r\n\r\n) */
+    char *body_start = strstr((char *)buf, "\r\n\r\n");
+    if (!body_start) return resp;
+    body_start += 4;
+
+    size_t body_len = total - (body_start - (char *)buf);
+    resp.body = malloc(body_len + 1);
+    memcpy(resp.body, body_start, body_len);
+    resp.body[body_len] = 0;
+    resp.body_len = body_len;
+
+    return resp;
+}
+
+void platform_http_response_free(platform_http_response_t *resp) {
+    if (resp && resp->body) {
+        free(resp->body);
+        resp->body = NULL;
+        resp->body_len = 0;
     }
 }
 

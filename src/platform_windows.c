@@ -34,6 +34,7 @@
 #include <mbedtls/bignum.h>
 #include <mbedtls/dhm.h>
 #include <mbedtls/ctr_drbg.h>
+#include <mbedtls/pkcs5.h>
 #include <mbedtls/entropy.h>
 #include <mbedtls/base64.h>
 #include <mbedtls/ssl.h>
@@ -93,7 +94,19 @@ int platform_tcp_read(platform_socket_t sock, uint8_t *buf, size_t n) {
     while (total < n) {
         int r = recv((SOCKET)(intptr_t)sock, (char *)(buf + total),
                      (int)(n - total), 0);
-        if (r <= 0) return -1;
+        if (r == 0) {
+            fprintf(stderr, "[tcp] recv EOF (connection closed by peer)\n");
+            return -1;
+        }
+        if (r < 0) {
+            int err = WSAGetLastError();
+            if (err == WSAETIMEDOUT) {
+                fprintf(stderr, "[tcp] recv timeout after %zu/%zu bytes\n", total, n);
+            } else {
+                fprintf(stderr, "[tcp] recv error %d after %zu/%zu bytes\n", err, total, n);
+            }
+            return -1;
+        }
         total += (size_t)r;
     }
     return 0;
@@ -189,19 +202,64 @@ int platform_http_server_write(platform_socket_t cl, const uint8_t *b, size_t l)
 }
 
 /* ================================================================== */
-/*  mDNS — TODO (Windows mDNS needs dns-sd or external lib)            */
-/*  For Windows builds, pairing is done on Linux/extractor;            */
-/*  this E2E test uses pre-captured credentials.                       */
-/* ================================================================== */
+/*  mDNS -- tinysvcmdns library (thirdparty/mdns.c, thirdparty/mdnsd.c) */
 
-struct platform_mdns_t { int placeholder; };
+#include "mdnssvc.h"
 
-platform_mdns_t *platform_mdns_start(const char *h) { (void)h; return calloc(1, 1); }
-int platform_mdns_register_service(platform_mdns_t *m, const char *n,
-                                   const char *t, int p, const char **txt) {
-    (void)m; (void)n; (void)t; (void)p; (void)txt; return 0;
+struct platform_mdns_t {
+    struct mdnsd *svr;
+    struct in_addr addr;
+    char hostname[64];
+};
+
+platform_mdns_t *platform_mdns_start(const char *hostname) {
+    platform_mdns_t *m = calloc(1, sizeof(*m));
+    if (!m) return NULL;
+
+    /* Get local IP via dummy UDP connect */
+    SOCKET s = socket(AF_INET, SOCK_DGRAM, 0);
+    struct sockaddr_in dummy = {0};
+    dummy.sin_family = AF_INET;
+    dummy.sin_addr.s_addr = inet_addr("8.8.8.8");
+    dummy.sin_port = htons(53);
+    connect(s, (struct sockaddr *)&dummy, sizeof(dummy));
+    int addrlen = sizeof(dummy);
+    getsockname(s, (struct sockaddr *)&dummy, &addrlen);
+    closesocket(s);
+    m->addr = dummy.sin_addr;
+    strncpy(m->hostname, hostname, sizeof(m->hostname) - 1);
+
+    m->svr = mdnsd_start(m->addr, false);
+    if (!m->svr) { free(m); return NULL; }
+
+    /* V13-style: hostname MUST have .local suffix */
+    char host_local[128];
+    snprintf(host_local, sizeof(host_local), "%s.local", hostname);
+    mdnsd_set_hostname(m->svr, host_local, m->addr);
+
+    fprintf(stderr, "[mDNS] Started on %s as %s\n",
+            inet_ntoa(m->addr), host_local);
+    return m;
 }
-void platform_mdns_stop(platform_mdns_t *m) { free(m); }
+
+int platform_mdns_register_service(platform_mdns_t *m,
+                                   const char *name, const char *type,
+                                   int port, const char **txt_records) {
+    if (!m || !m->svr) return -1;
+
+    /* V13-style: pass name, type (with .local), port, NULL hostname, TXT */
+    mdnsd_register_svc(m->svr, name, type, (uint16_t)port, NULL, txt_records);
+
+    fprintf(stderr, "[mDNS] Registered: %s %s:%d\n", name, type, port);
+    return 0;
+}
+
+void platform_mdns_stop(platform_mdns_t *m) {
+    if (m) {
+        if (m->svr) mdnsd_stop(m->svr);
+        free(m);
+    }
+}
 
 /* ================================================================== */
 /*  Crypto: SHA1, HMAC-SHA1, PBKDF2 (mbedtls)                         */
@@ -222,9 +280,14 @@ void platform_pbkdf2_sha1(const uint8_t *password, size_t pw_len,
                           const uint8_t *salt, size_t salt_len,
                           uint32_t iterations,
                           uint8_t *out, size_t out_len) {
-    mbedtls_pkcs5_pbkdf2_hmac_ext(MBEDTLS_MD_SHA1,
+    /* Use mbedtls 3.x API (mbedtls_pkcs5_pbkdf2_hmac_ext) instead of
+     * the deprecated mbedtls_pkcs5_pbkdf2_hmac which expects ctx* */
+    int ret = mbedtls_pkcs5_pbkdf2_hmac_ext(MBEDTLS_MD_SHA1,
         password, pw_len, salt, salt_len,
         (unsigned int)iterations, (uint32_t)out_len, out);
+    if (ret != 0) {
+        fprintf(stderr, "[platform] PBKDF2 ERROR: ret=%d\n", ret);
+    }
 }
 
 /* ================================================================== */
@@ -246,6 +309,18 @@ void platform_aes_ctr128(const uint8_t *key, const uint8_t *iv,
     mbedtls_aes_crypt_ctr(&aes, len, &nc_off,
                            nonce_counter, stream_block,
                            data, data);
+    mbedtls_aes_free(&aes);
+}
+
+void platform_aes_ecb_decrypt128(const uint8_t *key, uint8_t *data, size_t len) {
+    mbedtls_aes_context aes;
+    mbedtls_aes_init(&aes);
+    mbedtls_aes_setkey_dec(&aes, key, 128);
+    for (size_t off = 0; off < len; off += 16) {
+        uint8_t block[16];
+        mbedtls_aes_crypt_ecb(&aes, MBEDTLS_AES_DECRYPT, data + off, block);
+        memcpy(data + off, block, 16);
+    }
     mbedtls_aes_free(&aes);
 }
 
@@ -292,50 +367,40 @@ static int win_random_cb(void *ctx, unsigned char *buf, size_t len) {
 }
 
 void platform_dh_generate_keypair(uint8_t pub_key[96], uint8_t priv_key[96]) {
-    mbedtls_dhm_context dhm;
-    mbedtls_dhm_init(&dhm);
-
-    mbedtls_mpi P, G;
-    mbedtls_mpi_init(&P);
-    mbedtls_mpi_init(&G);
-    mbedtls_mpi_read_binary(&P, dh_prime, sizeof(dh_prime));
+    mbedtls_mpi P, G, X, GX;
+    mbedtls_mpi_init(&P); mbedtls_mpi_init(&G);
+    mbedtls_mpi_init(&X); mbedtls_mpi_init(&GX);
+    mbedtls_mpi_read_binary(&P, dh_prime, 96);
     mbedtls_mpi_lset(&G, 2);
-
-    mbedtls_dhm_set_group(&dhm, &P, &G);
-    mbedtls_dhm_make_public(&dhm, 96, priv_key, 96, win_random_cb, NULL);
-    memcpy(pub_key, dhm.GX.p, 96);
-
-    mbedtls_mpi_free(&P);
-    mbedtls_mpi_free(&G);
-    mbedtls_dhm_free(&dhm);
+    mbedtls_mpi_fill_random(&X, 95, win_random_cb, NULL);
+    mbedtls_mpi_mod_mpi(&X, &X, &P);
+    mbedtls_mpi_exp_mod(&GX, &G, &X, &P, NULL);
+    mbedtls_mpi_write_binary(&X, priv_key, 96);
+    mbedtls_mpi_write_binary(&GX, pub_key, 96);
+    mbedtls_mpi_free(&GX); mbedtls_mpi_free(&X);
+    mbedtls_mpi_free(&G); mbedtls_mpi_free(&P);
 }
 
 void platform_dh_compute_shared(const uint8_t priv_key[96],
                                 const uint8_t *peer_pub, size_t peer_pub_len,
                                 uint8_t shared[96]) {
-    mbedtls_dhm_context dhm;
-    mbedtls_dhm_init(&dhm);
+    mbedtls_mpi P, G, X, GY, K;
+    mbedtls_mpi_init(&P); mbedtls_mpi_init(&G);
+    mbedtls_mpi_init(&X); mbedtls_mpi_init(&GY);
+    mbedtls_mpi_init(&K);
 
-    mbedtls_mpi P, G;
-    mbedtls_mpi_init(&P);
-    mbedtls_mpi_init(&G);
     mbedtls_mpi_read_binary(&P, dh_prime, sizeof(dh_prime));
     mbedtls_mpi_lset(&G, 2);
-
-    mbedtls_dhm_set_group(&dhm, &P, &G);
-    mbedtls_mpi_read_binary(&dhm.X, priv_key, 96);
-
-    mbedtls_mpi GY;
-    mbedtls_mpi_init(&GY);
+    mbedtls_mpi_read_binary(&X, priv_key, 96);
     mbedtls_mpi_read_binary(&GY, peer_pub, peer_pub_len);
 
-    size_t olen = 0;
-    mbedtls_dhm_calc_secret(&dhm, shared, 96, &olen, win_random_cb, NULL);
+    /* K = GY ^ X mod P (standard Diffie-Hellman) */
+    mbedtls_mpi_exp_mod(&K, &GY, &X, &P, NULL);
+    mbedtls_mpi_write_binary(&K, shared, 96);
 
-    mbedtls_mpi_free(&GY);
-    mbedtls_mpi_free(&G);
+    mbedtls_mpi_free(&K); mbedtls_mpi_free(&GY);
+    mbedtls_mpi_free(&X); mbedtls_mpi_free(&G);
     mbedtls_mpi_free(&P);
-    mbedtls_dhm_free(&dhm);
 }
 
 void platform_random(uint8_t *buf, size_t len) {
@@ -364,118 +429,211 @@ size_t platform_base64_encode(const uint8_t *in, size_t in_len,
 }
 
 /* ================================================================== */
-/*  Shannon Stream Cipher (pure C — identical to POSIX/ESP32)          */
+/* ================================================================== */
+/*  Shannon Stream Cipher (pure C, exact cspot port)                   */
+/*  Source: cspot (MIT) — Shannon.cpp                                  */
 /* ================================================================== */
 
 #define SHANNON_N       16
+#define SHANNON_FOLD    16
 #define SHANNON_INITKONST 0x6996c53a
-#define SHANNON_KEYP    13
-
-static inline uint32_t sh_rotl(uint32_t i, int distance) {
-    return (i << distance) | (i >> (32 - distance));
-}
+#define SHANNON_KEYP     13
 
 struct platform_shannon_t {
-    uint32_t R[SHANNON_N];
-    uint32_t CRC[SHANNON_N];
+    uint32_t R[16];
+    uint32_t CRC[16];
+    uint32_t initR[16];
+    uint32_t konst;
     uint32_t sbuf;
     uint32_t mbuf;
     int nbuf;
 };
 
+static inline uint32_t rotl32(uint32_t n, unsigned int c) {
+    c &= 31;
+    return (n << c) | (n >> (32 - c));
+}
+
+static inline uint32_t sbox1(uint32_t w) {
+    w ^= rotl32(w, 5) | rotl32(w, 7);
+    w ^= rotl32(w, 19) | rotl32(w, 22);
+    return w;
+}
+
+static inline uint32_t sbox2(uint32_t w) {
+    w ^= rotl32(w, 7) | rotl32(w, 22);
+    w ^= rotl32(w, 5) | rotl32(w, 19);
+    return w;
+}
+
+#define BYTE2WORD(b) \
+    (((uint32_t)(b)[3] << 24) | ((uint32_t)(b)[2] << 16) | \
+     ((uint32_t)(b)[1] << 8)  | ((uint32_t)(b)[0]))
+
+#define WORD2BYTE(w, b) do { \
+    (b)[3] = (uint8_t)((w) >> 24); \
+    (b)[2] = (uint8_t)((w) >> 16); \
+    (b)[1] = (uint8_t)((w) >> 8);  \
+    (b)[0] = (uint8_t)(w);        \
+} while(0)
+
+#define XORWORD(w, b) do {       \
+    (b)[3] ^= (uint8_t)((w) >> 24); \
+    (b)[2] ^= (uint8_t)((w) >> 16); \
+    (b)[1] ^= (uint8_t)((w) >> 8);  \
+    (b)[0] ^= (uint8_t)(w);        \
+} while(0)
+
 static void shannon_cycle(platform_shannon_t *s) {
-    uint32_t t;
+    uint32_t t = s->R[12] ^ s->R[13] ^ s->konst;
+    t = sbox1(t) ^ rotl32(s->R[0], 1);
     int i;
-    t = s->R[12] ^ s->R[13] ^ SHANNON_INITKONST;
-    s->sbuf = sh_rotl(t, 1);
-    for (i = 0; i < SHANNON_N; i++) {
-        t = s->CRC[((i + SHANNON_N) - 1) % SHANNON_N];
-        t ^= s->R[i];
-        s->CRC[i] = t;
-        t = sh_rotl(t, 1);
-        s->CRC[i] ^= t;
-    }
-}
-
-static void shannon_macfunc(platform_shannon_t *s, uint32_t val) {
-    s->CRC[0] ^= val;
-}
-
-static void shannon_initstate(platform_shannon_t *s) {
-    int i;
-    for (i = 0; i < SHANNON_N; i++) {
-        s->R[i] = 1;
-        s->CRC[i] = 1;
-    }
-    s->R[SHANNON_KEYP] = s->R[SHANNON_KEYP] ^ SHANNON_INITKONST;
-    s->sbuf = 0;
-    s->mbuf = 0;
-    s->nbuf = 32;
     for (i = 1; i < SHANNON_N; i++)
+        s->R[i - 1] = s->R[i];
+    s->R[SHANNON_N - 1] = t;
+    t = sbox2(s->R[2] ^ s->R[15]);
+    s->R[0] ^= t;
+    s->sbuf = t ^ s->R[8] ^ s->R[12];
+}
+
+static void shannon_crcfunc(platform_shannon_t *s, uint32_t i) {
+    uint32_t t = s->CRC[0] ^ s->CRC[2] ^ s->CRC[15] ^ i;
+    int j;
+    for (j = 1; j < SHANNON_N; j++)
+        s->CRC[j - 1] = s->CRC[j];
+    s->CRC[SHANNON_N - 1] = t;
+}
+
+static void shannon_macfunc(platform_shannon_t *s, uint32_t i) {
+    shannon_crcfunc(s, i);
+    s->R[SHANNON_KEYP] ^= i;
+}
+
+static void shannon_init_state(platform_shannon_t *s) {
+    s->R[0] = 1;
+    s->R[1] = 1;
+    for (int i = 2; i < SHANNON_N; i++)
+        s->R[i] = s->R[i - 1] + s->R[i - 2];
+    s->konst = SHANNON_INITKONST;
+}
+
+static void shannon_save_state(platform_shannon_t *s) {
+    memcpy(s->initR, s->R, sizeof(s->initR));
+}
+
+static void shannon_reload_state(platform_shannon_t *s) {
+    memcpy(s->R, s->initR, sizeof(s->R));
+}
+
+static void shannon_genkonst(platform_shannon_t *s) {
+    s->konst = s->R[0];
+}
+
+static void shannon_diffuse(platform_shannon_t *s) {
+    for (int i = 0; i < SHANNON_FOLD; i++)
         shannon_cycle(s);
 }
 
-static inline void ADDKEY(platform_shannon_t *s, uint32_t k) {
-    s->R[SHANNON_KEYP] ^= k;
-    s->CRC[SHANNON_KEYP] ^= k;
-}
+#define ADDKEY(s, k) (s)->R[SHANNON_KEYP] ^= (k)
 
-static inline uint32_t BYTE2WORD(const uint8_t *b) {
-    return ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) |
-           ((uint32_t)b[2] << 8) | (uint32_t)b[3];
-}
-
-static inline void WORD2BYTE(uint32_t w, uint8_t *b) {
-    b[0] = (uint8_t)(w >> 24);
-    b[1] = (uint8_t)(w >> 16);
-    b[2] = (uint8_t)(w >> 8);
-    b[3] = (uint8_t)w;
-}
-
-static inline void shannon_diffuse(platform_shannon_t *s) {
-    int i;
-    for (i = 1; i < SHANNON_N; i++) {
-        s->R[i] ^= s->CRC[i];
-        s->CRC[i] ^= s->R[i];
+static void shannon_load_key(platform_shannon_t *s,
+                              const uint8_t *key, size_t key_len) {
+    size_t i;
+    int j;
+    for (i = 0; i + 3 < key_len; i += 4) {
+        uint32_t k = BYTE2WORD(&key[i]);
+        ADDKEY(s, k);
+        shannon_cycle(s);
     }
+    if (i < key_len) {
+        uint8_t xtra[4] = {0, 0, 0, 0};
+        for (j = 0; i < key_len; i++, j++)
+            xtra[j] = key[i];
+        uint32_t k = BYTE2WORD(xtra);
+        ADDKEY(s, k);
+        shannon_cycle(s);
+    }
+    ADDKEY(s, (uint32_t)key_len);
+    shannon_cycle(s);
+    memcpy(s->CRC, s->R, sizeof(s->CRC));
+    shannon_diffuse(s);
+    for (i = 0; i < SHANNON_N; i++)
+        s->R[i] ^= s->CRC[i];
 }
 
 platform_shannon_t *platform_shannon_new(void) {
     platform_shannon_t *s = calloc(1, sizeof(*s));
-    if (s) shannon_initstate(s);
     return s;
 }
 
-void platform_shannon_free(platform_shannon_t *s) { free(s); }
+void platform_shannon_free(platform_shannon_t *s) {
+    free(s);
+}
 
 void platform_shannon_key(platform_shannon_t *s, const uint8_t *key, size_t key_len) {
-    size_t i = 0;
-    while (key_len >= 4) {
-        ADDKEY(s, BYTE2WORD(key + i));
-        shannon_cycle(s);
-        i += 4;
-        key_len -= 4;
-    }
-    if (key_len) {
-        uint32_t last = 0;
-        memcpy(&last, key + i, key_len);
-        ADDKEY(s, last);
-        shannon_cycle(s);
-    }
+    shannon_init_state(s);
+    shannon_load_key(s, key, key_len);
+    shannon_genkonst(s);
+    shannon_save_state(s);
+    s->nbuf = 0;
 }
+
 
 void platform_shannon_nonce(platform_shannon_t *s, const uint8_t *nonce, size_t nonce_len) {
-    platform_shannon_key(s, nonce, nonce_len);
-    s->sbuf = 0;
+    shannon_reload_state(s);
+    s->konst = SHANNON_INITKONST;
+    shannon_load_key(s, nonce, nonce_len);
+    shannon_genkonst(s);
+    s->nbuf = 0;
 }
 
-void platform_shannon_encrypt(platform_shannon_t *s, uint8_t *buf, size_t len) {
-    platform_shannon_decrypt(s, buf, len);
+void platform_shannon_encrypt(platform_shannon_t *s, uint8_t *buf, size_t nbytes) {
+    uint8_t *endbuf;
+    /* buffered bytes */
+    while (s->nbuf && nbytes) {
+        s->mbuf ^= (*buf) << (32 - s->nbuf);
+        *buf ^= (uint8_t)(s->sbuf >> (32 - s->nbuf));
+        buf++; s->nbuf -= 8; nbytes--;
+    }
+    if (!s->nbuf && !nbytes) return;
+
+    /* whole words */
+    endbuf = &buf[nbytes & ~(size_t)3];
+    while (buf < endbuf) {
+        shannon_cycle(s);
+        uint32_t t = BYTE2WORD(buf);
+        shannon_macfunc(s, t);
+        t ^= s->sbuf;
+        WORD2BYTE(t, buf);
+        buf += 4;
+    }
+
+    /* trailing bytes */
+    nbytes &= 3;
+    if (nbytes) {
+        shannon_cycle(s);
+        s->mbuf = 0;
+        s->nbuf = 32;
+        while (s->nbuf && nbytes) {
+            s->mbuf ^= (*buf) << (32 - s->nbuf);
+            *buf ^= (uint8_t)(s->sbuf >> (32 - s->nbuf));
+            buf++; s->nbuf -= 8; nbytes--;
+        }
+    }
 }
 
-void platform_shannon_decrypt(platform_shannon_t *s, uint8_t *buf, size_t len) {
-    const uint8_t *endbuf = buf + (len & ~3);
-    size_t nbytes = len;
+void platform_shannon_decrypt(platform_shannon_t *s, uint8_t *buf, size_t nbytes) {
+    uint8_t *endbuf;
+    /* buffered bytes */
+    while (s->nbuf && nbytes) {
+        *buf ^= (uint8_t)(s->sbuf >> (32 - s->nbuf));
+        s->mbuf ^= (*buf) << (32 - s->nbuf);
+        buf++; s->nbuf -= 8; nbytes--;
+    }
+    if (!s->nbuf && !nbytes) return;
+
+    /* whole words */
+    endbuf = &buf[nbytes & ~(size_t)3];
     while (buf < endbuf) {
         shannon_cycle(s);
         uint32_t t = BYTE2WORD(buf) ^ s->sbuf;
@@ -483,6 +641,8 @@ void platform_shannon_decrypt(platform_shannon_t *s, uint8_t *buf, size_t len) {
         WORD2BYTE(t, buf);
         buf += 4;
     }
+
+    /* trailing bytes */
     nbytes &= 3;
     if (nbytes) {
         shannon_cycle(s);
@@ -498,13 +658,15 @@ void platform_shannon_decrypt(platform_shannon_t *s, uint8_t *buf, size_t len) {
 
 void platform_shannon_finish(platform_shannon_t *s, uint8_t mac[4]) {
     int i;
-    if (s->nbuf) shannon_macfunc(s, s->mbuf);
+    if (s->nbuf)
+        shannon_macfunc(s, s->mbuf);
     shannon_cycle(s);
     ADDKEY(s, SHANNON_INITKONST ^ ((uint32_t)s->nbuf << 3));
     s->nbuf = 0;
     for (i = 0; i < SHANNON_N; i++)
         s->R[i] ^= s->CRC[i];
     shannon_diffuse(s);
+    /* produce MAC: 4 bytes from stream buffer */
     shannon_cycle(s);
     WORD2BYTE(s->sbuf, mac);
 }
@@ -528,12 +690,12 @@ struct platform_tls_t {
 static int win_mbedtls_send(void *ctx, const unsigned char *buf, size_t len) {
     SOCKET *sock = (SOCKET *)ctx;
     int ret = send(*sock, (const char *)buf, (int)len, 0);
-    return (ret > 0) ? ret : (ret == 0 ? MBEDTLS_ERR_SSL_CONN_EOF : MBEDTLS_ERR_NET_SEND_FAILED);
+    return (ret > 0) ? ret : (ret == 0 ? MBEDTLS_ERR_SSL_CONN_EOF : -0x0001);
 }
 static int win_mbedtls_recv(void *ctx, unsigned char *buf, size_t len) {
     SOCKET *sock = (SOCKET *)ctx;
     int ret = recv(*sock, (char *)buf, (int)len, 0);
-    return (ret > 0) ? ret : (ret == 0 ? MBEDTLS_ERR_SSL_CONN_EOF : MBEDTLS_ERR_NET_RECV_FAILED);
+    return (ret > 0) ? ret : (ret == 0 ? MBEDTLS_ERR_SSL_CONN_EOF : -0x0002);
 }
 #endif
 

@@ -160,6 +160,7 @@ void platform_aes_ctr128(const uint8_t *key, const uint8_t *iv,
                          uint8_t *data, size_t len);
 
 /** AES-192-ECB decrypt (data length must be multiple of 16) */
+void platform_aes_ecb_decrypt128(const uint8_t *key, uint8_t *data, size_t len);
 void platform_aes_ecb_decrypt192(const uint8_t *key, uint8_t *data, size_t len);
 
 /* ------------------------------------------------------------------ */
@@ -212,6 +213,8 @@ typedef struct platform_shannon_t platform_shannon_t;
 platform_shannon_t *platform_shannon_new(void);
 void platform_shannon_free(platform_shannon_t *s);
 void platform_shannon_key(platform_shannon_t *s, const uint8_t *key, size_t key_len);
+void platform_shannon_key_pair(platform_shannon_t *snd, platform_shannon_t *rcv,
+                                const uint8_t *send_key, const uint8_t *recv_key);
 void platform_shannon_nonce(platform_shannon_t *s, const uint8_t *nonce, size_t nonce_len);
 void platform_shannon_encrypt(platform_shannon_t *s, uint8_t *buf, size_t len);
 void platform_shannon_decrypt(platform_shannon_t *s, uint8_t *buf, size_t len);
