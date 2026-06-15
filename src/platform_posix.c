@@ -97,6 +97,10 @@ void platform_tcp_set_timeout(platform_socket_t sock, int seconds) {
     setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 }
 
+void platform_sleep_ms(int ms) {
+    usleep(ms * 1000);
+}
+
 /* ================================================================== */
 /*  HTTP server (Bell)                                                 */
 /* ================================================================== */

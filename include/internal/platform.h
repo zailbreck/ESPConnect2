@@ -43,6 +43,9 @@ int platform_tcp_write(platform_socket_t sock, const uint8_t *buf, size_t n);
 /** Set socket timeout in seconds */
 void platform_tcp_set_timeout(platform_socket_t sock, int seconds);
 
+/** Sleep for specified milliseconds */
+void platform_sleep_ms(int ms);
+
 /* ------------------------------------------------------------------ */
 /*  TLS / HTTPS support                                                */
 /* ------------------------------------------------------------------ */
