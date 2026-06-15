@@ -294,12 +294,12 @@ static void compute_auth_challenge(
     memcpy(cb, hello_pkt, hello_pkt_len);
     memcpy(cb + hello_pkt_len, ap_resp, ap_resp_len);
 
-    /* 5 rounds: HMAC-SHA1(shared, [x] + cb) — x at BEGINNING matches cspot */
+    /* 5 rounds: HMAC-SHA1(shared, cb + [x]) — matches cspot vector insert */
     uint8_t *dst = result_out;
     for (int x = 1; x < 6; x++) {
         uint8_t *cv = malloc(cb_len + 1);
-        cv[0] = (uint8_t)x;  /* x at FRONT — matches standalone cv.insert(cv.begin(), x) */
-        memcpy(cv + 1, cb, cb_len);
+        memcpy(cv, cb, cb_len);
+        cv[cb_len] = (uint8_t)x;  /* x at END because C++ insert(begin) pushes existing element to the end! */
         platform_hmac_sha1(shared, shared_len, cv, cb_len + 1, dst);
         free(cv);
         dst += 20;
