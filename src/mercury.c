@@ -238,26 +238,18 @@ static void raw_pb_bytes(pb_buf_t *b, uint32_t tag, const uint8_t *d, size_t len
     b->size += len;
 }
 
-static void pb_encode_varint(pb_buf_t *b, uint32_t field_num, uint64_t val) {
-    raw_pb_varint(b, (field_num << 3) | 0, val);
-}
-
-static void pb_encode_bytes(pb_buf_t *b, uint32_t field_num, const uint8_t *data, size_t len) {
-    raw_pb_bytes(b, (field_num << 3) | 2, data, len);
-}
-
 static void build_client_resp(pb_buf_t *out, const uint8_t hmac[20]) {
     pb_init(out, 128);
     pb_buf_t dh; pb_init(&dh, 32);
-    pb_encode_bytes(&dh, 1, hmac, 20);
+    pb_bytes(&dh, 10, hmac, 20); // 0xa = 10
 
     pb_buf_t resp; pb_init(&resp, 64);
-    pb_encode_bytes(&resp, 1, dh.data, dh.size);
+    pb_bytes(&resp, 10, dh.data, dh.size); // 0xa = 10
     pb_free(&dh);
 
-    pb_encode_bytes(out, 1, resp.data, resp.size);
-    pb_encode_bytes(out, 2, (const uint8_t*)"", 0);
-    pb_encode_bytes(out, 3, (const uint8_t*)"", 0);
+    pb_bytes(out, 10, resp.data, resp.size); // 0xa = 10
+    pb_bytes(out, 20, (const uint8_t*)"", 0); // 0x14 = 20
+    pb_bytes(out, 30, (const uint8_t*)"", 0); // 0x1e = 30
 
     pb_free(&resp);
 }
@@ -270,21 +262,21 @@ static void build_login_request(pb_buf_t *out,
     pb_init(out, 512);
 
     pb_buf_t lc; pb_init(&lc, 256);
-    pb_encode_bytes(&lc, 1, (const uint8_t *)username, strlen(username));
-    pb_encode_varint(&lc, 2, auth_type);
-    pb_encode_bytes(&lc, 3, auth_data, ad_len);
-    pb_encode_bytes(out, 1, lc.data, lc.size);
+    pb_bytes(&lc, 10, (const uint8_t *)username, strlen(username)); // 0xa = 10
+    pb_enum(&lc, 20, auth_type); // 0x14 = 20
+    pb_bytes(&lc, 30, auth_data, ad_len); // 0x1e = 30
+    pb_bytes(out, 10, lc.data, lc.size); // 0xa = 10
     pb_free(&lc);
 
     pb_buf_t si; pb_init(&si, 128);
-    pb_encode_varint(&si, 1, 2);
-    pb_encode_varint(&si, 2, 0);
-    pb_encode_bytes(&si, 3, (const uint8_t*)"cspot-player", 12);
-    pb_encode_bytes(&si, 4, (const uint8_t *)device_id, strlen(device_id));
-    pb_encode_bytes(out, 2, si.data, si.size);
+    pb_enum(&si, 10, 2); // 0xa = 10 (CPU_X86)
+    pb_enum(&si, 60, 0); // 0x3c = 60 (OS_UNKNOWN)
+    pb_bytes(&si, 90, (const uint8_t*)"cspot-player", 12); // 0x5a = 90
+    pb_bytes(&si, 100, (const uint8_t *)device_id, strlen(device_id)); // 0x64 = 100
+    pb_bytes(out, 50, si.data, si.size); // 0x32 = 50
     pb_free(&si);
 
-    pb_encode_bytes(out, 3, (const uint8_t*)"cspot-1.1", 9);
+    pb_bytes(out, 70, (const uint8_t*)"cspot-1.1", 9); // 0x46 = 70
 }
 
 /* ================================================================== */
