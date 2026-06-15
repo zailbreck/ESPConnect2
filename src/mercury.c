@@ -471,7 +471,7 @@ int mercury_login5(mercury_session_t *s,
     pb_buf_t ch_proto;
     build_client_hello(&ch_proto, s->dh_public, 96, nonce, 16);
     fprintf(stderr, "[%s] ClientHello proto sz=%zu hex=", TAG, ch_proto.size);
-    for (size_t i = 0; i < ch_proto.size && i < 80; i++) fprintf(stderr, "%02x", ch_proto.data[i]);
+    for (size_t i = 0; i < ch_proto.size ; i++) fprintf(stderr, "%02x", ch_proto.data[i]);
     fprintf(stderr, "\n");
 
     uint8_t hello_pkt[512];
@@ -541,19 +541,35 @@ int mercury_login5(mercury_session_t *s,
     /* KEY: uses ch_proto ONLY (no prefix/len header), matches standalone cb.insert(ch.begin(),ch.end()) */
     fprintf(stderr, "[%s] DBG cb=(ch_proto=%zu + ar_buf=%zu)\n", TAG, ch_proto.size, ar_len);
     fprintf(stderr, "[%s] DBG ch_proto hex=", TAG);
-    for (size_t i = 0; i < ch_proto.size && i < 80; i++) fprintf(stderr, "%02x", ch_proto.data[i]);
+    for (size_t i = 0; i < ch_proto.size ; i++) fprintf(stderr, "%02x", ch_proto.data[i]);
     fprintf(stderr, "\n");
     fprintf(stderr, "[%s] DBG ar_buf hex=", TAG);
-    for (size_t i = 0; i < ar_len && i < 80; i++) fprintf(stderr, "%02x", ar_buf[i]);
+    for (size_t i = 0; i < ar_len ; i++) fprintf(stderr, "%02x", ar_buf[i]);
     fprintf(stderr, "\n");
     fprintf(stderr, "[%s] DBG shared_key hex=", TAG);
-    for (int i = 0; i < 16; i++) fprintf(stderr, "%02x", s->shared_key[i]);
+    for (int i = 0; i < 96; i++) fprintf(stderr, "%02x", s->shared_key[i]);
     fprintf(stderr, "\n");
     uint8_t challenge[100];
     compute_auth_challenge(s->shared_key, 96,
                            ch_proto.data, ch_proto.size,  /* proto only, NOT wire packet */
                            ar_buf, ar_len,     /* [4B len][ar_proto] */
                            challenge);
+    /* Write full debug data to file for cross-verification */
+    {
+        FILE *__d = fopen("login5_dump.txt", "w");
+        if (__d) {
+            fprintf(__d, "shared_key(96)=");
+            for (int i_=0; i_<96; i_++) fprintf(__d, "%02x", s->shared_key[i_]);
+            fprintf(__d, "\nch_proto(%zu)=", ch_proto.size);
+            for (size_t i_=0; i_<ch_proto.size; i_++) fprintf(__d, "%02x", ch_proto.data[i_]);
+            fprintf(__d, "\nar_buf(%zu)=", ar_len);
+            for (size_t i_=0; i_<ar_len; i_++) fprintf(__d, "%02x", ar_buf[i_]);
+            fprintf(__d, "\nchallenge(100)=");
+            for (int i_=0; i_<100; i_++) fprintf(__d, "%02x", challenge[i_]);
+            fprintf(__d, "\n");
+            fclose(__d);
+        }
+    }
     pb_free(&ch_proto);
 
     uint8_t send_key[32], recv_key[32];
@@ -595,7 +611,7 @@ int mercury_login5(mercury_session_t *s,
                         username, device_id);
 
     fprintf(stderr, "[%s] LoginReq sz=%zu hex=", TAG, lr_buf.size);
-    for (size_t i = 0; i < lr_buf.size && i < 80; i++)
+    for (size_t i = 0; i < lr_buf.size ; i++)
         fprintf(stderr, "%02x", lr_buf.data[i]);
     fprintf(stderr, "\n");
 
