@@ -207,7 +207,7 @@ int spotify_login5_get_token(const char *client_id, const char *device_id, const
     
     do {
         len = mbedtls_ssl_read(&ssl, buf + total_recv, sizeof(buf) - 1 - total_recv);
-        if (len == MBEDTLS_ERR_SSL_WANT_READ || len == MBEDTLS_ERR_SSL_WANT_WRITE) continue;
+        if (len == MBEDTLS_ERR_SSL_WANT_READ || len == MBEDTLS_ERR_SSL_WANT_WRITE || len == -0x7B00) continue;
         if (len == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY || len == 0) {
             fprintf(stderr, "[DEBUG] ssl_read EOF\\n");
             break;
