@@ -15,7 +15,7 @@ int spotify_login5_extract_token(const uint8_t *payload, size_t payload_len, cha
     // Since we know it's a Protobuf LoginResponse
     
     for(size_t i = 0; i < payload_len - 5; i++) {
-        if (payload[i] == 'B' && payload[i+1] == 'Q' && payload[i+2] == 'A') {
+        if (payload[i] == 'B' && payload[i+1] == 'Q' && payload[i+2] >= 'A' && payload[i+2] <= 'Z') {
             size_t token_len = 0;
             // The byte before 'B' should be the varint length of the string in protobuf
             uint8_t len_byte = payload[i-1];
