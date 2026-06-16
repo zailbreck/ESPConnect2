@@ -157,21 +157,17 @@ static int do_pairing(void) {
 static int do_login5_exchange(void) {
     fprintf(stderr, "\n===== STEP 0.5: LOGIN5 HTTPS EXCHANGE =====\n");
     
-    uint8_t inner_blob[2048];
-    size_t inner_blob_len = 0;
-    base64_decode(g_auth_b64, strlen(g_auth_b64), inner_blob, &inner_blob_len);
-    fprintf(stderr, "OK: Decoded %zu bytes of AuthBlob\n", inner_blob_len);
-    
     uint8_t login5_response[2048];
     size_t login5_response_len = sizeof(login5_response);
     
     fprintf(stderr, "Connecting to login5.spotify.com via mbedTLS...\n");
+    fprintf(stderr, "Sending %zu bytes of AuthBlob DIRECTLY to Login5\n", strlen(g_auth_b64));
     int ret = spotify_login5_get_token(
         "65b708073fc0480ea92a077233ca87bd", // spotify desktop client id
         DEVICE_ID,
         g_username,
-        inner_blob,
-        inner_blob_len,
+        (const uint8_t*)g_auth_b64,
+        strlen(g_auth_b64),
         login5_response,
         &login5_response_len
     );
