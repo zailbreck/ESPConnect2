@@ -326,7 +326,7 @@ void platform_dh_generate_keypair(uint8_t pub_key[96], uint8_t priv_key[96]) {
     mbedtls_mpi_free(&G); mbedtls_mpi_free(&P);
 }
 
-void platform_dh_compute_shared_old(const uint8_t priv_key[96],
+void platform_dh_compute_shared_old2_old(const uint8_t priv_key[96],
                                 const uint8_t *peer_pub, size_t peer_pub_len,
                                 uint8_t shared[96]) {
     mbedtls_mpi P, G, X, GY, K;
@@ -833,17 +833,11 @@ void platform_http_response_free(platform_http_response_t *resp) {
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
-    void platform_mdns_stop(platform_mdns_t *m) {
-    if (!m) return;
-    m->running = 0;
-    if (m->thread) {
-        WaitForSingleObject(m->thread, INFINITE);
-        CloseHandle(m->thread);
-    }
+    
     mdns_socket_close(m->sock);
     free(m);
 }
-void platform_dh_compute_shared(const uint8_t priv_key[96],
+void platform_dh_compute_shared_old2(const uint8_t priv_key[96],
                                 const uint8_t *peer_pub, size_t peer_pub_len,
                                 uint8_t shared[96], size_t *out_len) {
     mbedtls_mpi P, G, X, GY, K;
@@ -862,4 +856,191 @@ void platform_dh_compute_shared(const uint8_t priv_key[96],
 
     mbedtls_mpi_free(&P); mbedtls_mpi_free(&G);
     mbedtls_mpi_free(&X); mbedtls_mpi_free(&GY); mbedtls_mpi_free(&K);
+}
+#include "internal/platform.h"
+#include "mdns.h"
+#include <stdio.h>
+#include <string.h>
+
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+
+struct platform_mdns_t {
+    int sock;
+    struct sockaddr_in addr;
+    char hostname[64];
+    char service_name[64];
+    char service_type[64];
+    int port;
+    HANDLE thread;
+    int running;
+    const char *txt_records[16];
+    int txt_count;
+};
+
+static mdns_record_t create_ptr_record(platform_mdns_t *m, mdns_string_t service, mdns_string_t instance) {
+    mdns_record_t r = {0};
+    r.name = service;
+    r.type = MDNS_RECORDTYPE_PTR;
+    r.data.ptr.name = instance;
+    return r;
+}
+
+static mdns_record_t create_srv_record(platform_mdns_t *m, mdns_string_t instance, mdns_string_t host) {
+    mdns_record_t r = {0};
+    r.name = instance;
+    r.type = MDNS_RECORDTYPE_SRV;
+    r.data.srv.name = host;
+    r.data.srv.port = m->port;
+    r.data.srv.priority = 0;
+    r.data.srv.weight = 0;
+    return r;
+}
+
+static mdns_record_t create_a_record(platform_mdns_t *m, mdns_string_t host) {
+    mdns_record_t r = {0};
+    r.name = host;
+    r.type = MDNS_RECORDTYPE_A;
+    r.data.a.addr = m->addr;
+    return r;
+}
+
+static mdns_record_t create_txt_record(platform_mdns_t *m, mdns_string_t instance, const char *keyval) {
+    mdns_record_t r = {0};
+    r.name = instance;
+    r.type = MDNS_RECORDTYPE_TXT;
+    r.data.txt.key.str = keyval;
+    r.data.txt.key.length = strlen(keyval);
+    r.data.txt.value.str = NULL;
+    r.data.txt.value.length = 0;
+    return r;
+}
+
+static void send_announcement(platform_mdns_t *m) {
+    char svc_str[128];
+    snprintf(svc_str, sizeof(svc_str), "%s.local.", m->service_type);
+    
+    char inst_str[256];
+    snprintf(inst_str, sizeof(inst_str), "%s.%s", m->service_name, svc_str);
+    
+    char host_str[128];
+    snprintf(host_str, sizeof(host_str), "%s.local.", m->hostname);
+
+    mdns_string_t svc_name = { svc_str, strlen(svc_str) };
+    mdns_string_t inst_name = { inst_str, strlen(inst_str) };
+    mdns_string_t host_name = { host_str, strlen(host_str) };
+
+    mdns_record_t answer = create_ptr_record(m, svc_name, inst_name);
+    
+    mdns_record_t additional[32];
+    size_t add_count = 0;
+    additional[add_count++] = create_srv_record(m, inst_name, host_name);
+    additional[add_count++] = create_a_record(m, host_name);
+    
+    for (int i = 0; i < m->txt_count; i++) {
+        additional[add_count++] = create_txt_record(m, inst_name, m->txt_records[i]);
+    }
+
+    uint8_t buffer[2048];
+    mdns_announce_multicast(m->sock, buffer, sizeof(buffer), answer, NULL, 0, additional, add_count);
+}
+
+static int mdns_query_callback(int sock, const struct sockaddr* from, size_t addrlen,
+                               mdns_entry_type_t entry, uint16_t query_id,
+                               uint16_t rtype, uint16_t rclass, uint32_t ttl,
+                               const void* data, size_t size, size_t name_offset,
+                               size_t name_length, size_t record_offset, size_t record_length,
+                               void* user_data) {
+    platform_mdns_t *m = (platform_mdns_t *)user_data;
+    
+    char namebuf[256];
+    mdns_string_t namestr = mdns_string_extract(data, size, &name_offset, namebuf, sizeof(namebuf));
+    
+    char expected_type[128];
+    snprintf(expected_type, sizeof(expected_type), "%s.local.", m->service_type);
+    
+    if ((rtype == MDNS_RECORDTYPE_PTR || rtype == MDNS_RECORDTYPE_ANY) && 
+        strncmp(namestr.str, expected_type, namestr.length) == 0) {
+        
+        send_announcement(m); // Just announce when someone asks
+    }
+    return 0;
+}
+
+static DWORD WINAPI mdns_thread(LPVOID arg) {
+    platform_mdns_t *m = (platform_mdns_t *)arg;
+    uint8_t buffer[2048];
+    
+    send_announcement(m); // Initial announce
+    
+    while (m->running) {
+        struct timeval tv = {1, 0}; // 1 second timeout
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(m->sock, &rfds);
+        if (select(0, &rfds, NULL, NULL, &tv) > 0) {
+            mdns_socket_listen(m->sock, buffer, sizeof(buffer), mdns_query_callback, m);
+        }
+    }
+    return 0;
+}
+
+platform_mdns_t *platform_mdns_start(const char *hostname) {
+    platform_mdns_t *m = calloc(1, sizeof(*m));
+    if (!m) return NULL;
+
+    SOCKET s = socket(AF_INET, SOCK_DGRAM, 0);
+    struct sockaddr_in dummy = {0};
+    dummy.sin_family = AF_INET;
+    dummy.sin_addr.s_addr = inet_addr("8.8.8.8");
+    dummy.sin_port = htons(53);
+    connect(s, (struct sockaddr *)&dummy, sizeof(dummy));
+    int addrlen = sizeof(dummy);
+    getsockname(s, (struct sockaddr *)&dummy, &addrlen);
+    closesocket(s);
+    m->addr = dummy;
+
+    strncpy(m->hostname, hostname, sizeof(m->hostname) - 1);
+
+    m->sock = mdns_socket_open_ipv4(&m->addr);
+    if (m->sock < 0) {
+        free(m);
+        return NULL;
+    }
+
+    fprintf(stderr, "[mDNS] Started on %s.local\n", hostname);
+    return m;
+}
+
+int platform_mdns_register_service(platform_mdns_t *m,
+                                   const char *name, const char *type,
+                                   int port, const char **txt_records) {
+    if (!m) return -1;
+    strncpy(m->service_name, name, sizeof(m->service_name) - 1);
+    strncpy(m->service_type, type, sizeof(m->service_type) - 1);
+    m->port = port;
+    
+    m->txt_count = 0;
+    while (txt_records && txt_records[m->txt_count] && m->txt_count < 16) {
+        m->txt_records[m->txt_count] = txt_records[m->txt_count];
+        m->txt_count++;
+    }
+
+    m->running = 1;
+    m->thread = CreateThread(NULL, 0, mdns_thread, m, 0, NULL);
+    fprintf(stderr, "[mDNS] Registered: %s %s:%d\n", name, type, port);
+    return 0;
+}
+
+void platform_mdns_stop(platform_mdns_t *m) {
+    if (!m) return;
+    m->running = 0;
+    if (m->thread) {
+        WaitForSingleObject(m->thread, INFINITE);
+        CloseHandle(m->thread);
+    }
+    mdns_socket_close(m->sock);
+    free(m);
 }
