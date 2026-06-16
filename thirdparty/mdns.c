@@ -1,4 +1,5 @@
 #define in4addr_any_win (*(struct in_addr *)&in4addr_any_init)
+#include <winsock2.h>
 static const struct in_addr in4addr_any_init = { 0 };
 
 #ifdef _WIN32
