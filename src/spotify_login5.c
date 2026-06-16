@@ -192,6 +192,7 @@ int spotify_login5_get_token(const char *client_id, const char *device_id, const
              "Host: %s\r\n"
              "Accept: application/x-protobuf\r\n"
              "Content-Type: application/x-protobuf\r\n"
+             "User-Agent: Spotify/8.8.14.575 Android/33 (SM-G991B)\r\n"
              "Content-Length: %zu\r\n"
              "Connection: close\r\n"
              "\r\n", LOGIN5_PATH, LOGIN5_HOST, payload_len);
@@ -207,8 +208,14 @@ int spotify_login5_get_token(const char *client_id, const char *device_id, const
     do {
         len = mbedtls_ssl_read(&ssl, buf + total_recv, sizeof(buf) - 1 - total_recv);
         if (len == MBEDTLS_ERR_SSL_WANT_READ || len == MBEDTLS_ERR_SSL_WANT_WRITE) continue;
-        if (len == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY || len == 0) break;
-        if (len < 0) break;
+        if (len == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY || len == 0) {
+            fprintf(stderr, "[DEBUG] ssl_read EOF\\n");
+            break;
+        }
+        if (len < 0) {
+            fprintf(stderr, "[DEBUG] ssl_read ERROR: %d\\n", len);
+            break;
+        }
         
         total_recv += len;
         
@@ -221,6 +228,8 @@ int spotify_login5_get_token(const char *client_id, const char *device_id, const
             }
         }
     } while (1);
+
+    fprintf(stderr, "[DEBUG] Total bytes received: %zu\\n", total_recv);
 
     mbedtls_ssl_close_notify(&ssl);
     mbedtls_x509_crt_free(&cacert);
