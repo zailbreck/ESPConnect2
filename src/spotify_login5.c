@@ -230,7 +230,17 @@ int spotify_login5_get_token(const char *client_id, const char *device_id, const
     mbedtls_ctr_drbg_free(&ctr_drbg);
     mbedtls_entropy_free(&entropy);
 
-    if (payload_offset == -1) { fprintf(stderr, "FAIL: payload_offset == -1 (no HTTP headers found)\n"); return -1; }
+    
+    if (payload_offset == -1) {
+        fprintf(stderr, "FAIL: payload_offset == -1 (no HTTP headers found)\n");
+        fprintf(stderr, "=== RAW HTTP RESPONSE ===\n");
+        for(size_t i=0; i<total_recv; i++) {
+            fputc(buf[i], stderr);
+        }
+        fprintf(stderr, "\n=========================\n");
+        return -1;
+    }
+
     
     size_t proto_len = total_recv - payload_offset;
     if (proto_len > *access_token_out_len) { fprintf(stderr, "FAIL: proto_len %zu > max %zu\n", proto_len, *access_token_out_len); return -1; }
