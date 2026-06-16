@@ -217,8 +217,8 @@ static mercury_session_t *do_mercury_login(void) {
         return NULL;
     }
 
-    int ret = mercury_login5(sess, g_username, g_auth_b64,
-                              g_auth_type, DEVICE_ID, AP_HOST, AP_PORT);
+    int ret = mercury_login5(sess, g_username, g_access_token_b64,
+                              3, DEVICE_ID, AP_HOST, AP_PORT);
     if (ret != 0) {
         fprintf(stderr, "FAIL: mercury_login5 = %d\n", ret);
         mercury_destroy(sess);
