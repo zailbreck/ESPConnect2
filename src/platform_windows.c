@@ -205,7 +205,6 @@ int platform_http_server_write(platform_socket_t cl, const uint8_t *b, size_t l)
 /*  mDNS -- tinysvcmdns library (thirdparty/mdns.c, thirdparty/mdnsd.c) */
 
 
-}
 
 /* ================================================================== */
 /*  Crypto: SHA1, HMAC-SHA1, PBKDF2 (mbedtls)                         */

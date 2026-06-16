@@ -530,8 +530,9 @@ int zeroconf_get_credentials(zeroconf_session_t *session,
     if (ck_len == 0) return -3;
 
     uint8_t shared_secret[96];
+    size_t shared_len = 0;
     platform_dh_compute_shared(session->dh_private, client_key_bin, ck_len,
-                               shared_secret);
+                               shared_secret, &shared_len);
 
     /* DEBUG: print key lengths and shared secret first bytes */
     for (int i = 0; i < 8; i++) fprintf(stderr, "%02x", session->dh_private[i]);

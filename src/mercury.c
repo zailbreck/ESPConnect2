@@ -248,9 +248,8 @@ static void build_client_resp(pb_buf_t *out, const uint8_t hmac[20]) {
     pb_free(&dh);
 
     pb_bytes(out, 10, resp.data, resp.size); // 0xa = 10
-    pb_bytes(out, 20, (const uint8_t*)"", 0); // 0x14 = 20
-    pb_bytes(out, 30, (const uint8_t*)"", 0); // 0x1e = 30
-
+    /* Librespot initializes pow_response and crypto_response, but nanopb in cspot skips them.
+     * We will omit them entirely to perfectly match nanopb's behavior. */
     pb_free(&resp);
 }
 
@@ -261,22 +260,25 @@ static void build_login_request(pb_buf_t *out,
                                  const char *device_id) {
     pb_init(out, 512);
 
+    /* LoginCredentials (field 10) */
     pb_buf_t lc; pb_init(&lc, 256);
-    pb_bytes(&lc, 10, (const uint8_t *)username, strlen(username)); // 0xa = 10
-    pb_enum(&lc, 20, auth_type); // 0x14 = 20
-    pb_bytes(&lc, 30, auth_data, ad_len); // 0x1e = 30
-    pb_bytes(out, 10, lc.data, lc.size); // 0xa = 10
+    pb_str(&lc, 10, username);         // username = field 10
+    pb_enum(&lc, 20, auth_type);       // typ = field 20
+    pb_bytes(&lc, 30, auth_data, ad_len); // auth_data = field 30
+    pb_bytes(out, 10, lc.data, lc.size);  // login_credentials = field 10
     pb_free(&lc);
 
+    /* SystemInfo (field 50) */
     pb_buf_t si; pb_init(&si, 128);
-    pb_enum(&si, 10, 2); // 0xa = 10 (CPU_X86)
-    pb_enum(&si, 60, 0); // 0x3c = 60 (OS_UNKNOWN)
-    pb_bytes(&si, 90, (const uint8_t*)"cspot-player", 12); // 0x5a = 90
-    pb_bytes(&si, 100, (const uint8_t *)device_id, strlen(device_id)); // 0x64 = 100
-    pb_bytes(out, 50, si.data, si.size); // 0x32 = 50
+    pb_enum(&si, 10, 0);               // cpu_family = field 10 (CPU_UNKNOWN)
+    pb_enum(&si, 60, 0);               // os = field 60 (OS_UNKNOWN)
+    pb_str(&si, 90, "cspot-player");   // system_information_string = field 90
+    pb_str(&si, 100, device_id);       // device_id = field 100
+    pb_bytes(out, 50, si.data, si.size);  // system_info = field 50
     pb_free(&si);
 
-    pb_bytes(out, 70, (const uint8_t*)"cspot-1.1", 9); // 0x46 = 70
+    /* version_string (field 70) */
+    pb_str(out, 70, "cspot-1.1");      // version_string = field 70
 }
 
 /* ================================================================== */
@@ -332,6 +334,7 @@ struct mercury_session_t {
     uint8_t dh_public[96];
     uint8_t dh_private[96];
     uint8_t shared_key[96];
+    size_t shared_len;
 
     /* Shannon ciphers */
     platform_shannon_t *send_cipher;
@@ -549,7 +552,7 @@ int mercury_login5(mercury_session_t *s,
     fprintf(stderr, "[%s] Server DH: 96B\n", TAG);
 
     /* ---------- Compute shared secret ---------- */
-    platform_dh_compute_shared(s->dh_private, server_dh, 96, s->shared_key);
+    platform_dh_compute_shared(s->dh_private, server_dh, 96, s->shared_key, &s->shared_len);
 
     /* ---------- HMAC challenge ---------- */
     /* KEY: uses ch_proto ONLY (no prefix/len header), matches standalone cb.insert(ch.begin(),ch.end()) */
@@ -561,10 +564,10 @@ int mercury_login5(mercury_session_t *s,
     for (size_t i = 0; i < ar_len ; i++) fprintf(stderr, "%02x", ar_buf[i]);
     fprintf(stderr, "\n");
     fprintf(stderr, "[%s] DBG shared_key hex=", TAG);
-    for (int i = 0; i < 96; i++) fprintf(stderr, "%02x", s->shared_key[i]);
+    for (size_t i = 0; i < s->shared_len; i++) fprintf(stderr, "%02x", s->shared_key[i]);
     fprintf(stderr, "\n");
     uint8_t challenge[100];
-    compute_auth_challenge(s->shared_key, 96,
+    compute_auth_challenge(s->shared_key, s->shared_len,
                            hello_pkt, hello_pkt_len,  /* FULL packet including prefix and size */
                            ar_buf, ar_len,     /* [4B len][ar_proto] */
                            challenge);
@@ -765,8 +768,27 @@ int mercury_recv(mercury_session_t *s, uint8_t *cmd,
                  uint8_t *data, size_t *out_len, size_t max_len) {
     if (!s || s->sock == PLATFORM_SOCKET_INVALID) return -1;
 
-    uint8_t hdr[3];
-    if (platform_tcp_read(s->sock, hdr, 3) != 0) return -1;
+    uint8_t hdr[4];
+    if (platform_tcp_read(s->sock, hdr, 4) != 0) {
+        fprintf(stderr, "[mercury] read hdr fail\n");
+        return -1;
+    }
+    fprintf(stderr, "[mercury] RAW hdr hex = %02x %02x %02x %02x\n", hdr[0], hdr[1], hdr[2], hdr[3]);
+
+    /* The server might send an unencrypted APResponseMessage (e.g. APLoginFailed) if LoginReq fails. */
+    if (hdr[0] == 0x00 && hdr[1] == 0x00 && hdr[2] == 0x00) {
+        uint32_t tot = (hdr[0]<<24)|(hdr[1]<<16)|(hdr[2]<<8)|hdr[3];
+        uint8_t err_buf[256];
+        if (tot > 4 && tot <= sizeof(err_buf) + 4) {
+            platform_tcp_read(s->sock, err_buf, tot - 4);
+            /* Parse for login_failed (field 30 = 0xF2 0x01) */
+            if (err_buf[0] == 0xf2 && err_buf[1] == 0x01) {
+                fprintf(stderr, "[mercury] Server returned APLoginFailed (BadCredentials/etc)\n");
+                return -9; /* Authentication failed */
+            }
+        }
+        return -1;
+    }
 
     /* Set nonce before decrypting */
     uint8_t nonce[4];
@@ -777,18 +799,25 @@ int mercury_recv(mercury_session_t *s, uint8_t *cmd,
     platform_shannon_decrypt(s->recv_cipher, hdr, 3);
     *cmd = hdr[0];
     uint16_t pkt_len = read_u16_be(hdr + 1);
+    fprintf(stderr, "[mercury] Recv cmd=0x%02x, len=%u\n", *cmd, pkt_len);
 
     size_t to_read = pkt_len;
     if (to_read > max_len) to_read = max_len;
     if (to_read > 0) {
-        if (platform_tcp_read(s->sock, data, to_read) != 0) return -1;
+        if (platform_tcp_read(s->sock, data, to_read) != 0) {
+            fprintf(stderr, "[mercury] read data fail\n");
+            return -1;
+        }
         platform_shannon_decrypt(s->recv_cipher, data, to_read);
     }
     *out_len = to_read;
 
     /* Read and check MAC */
     uint8_t recv_mac[SHANNON_MAC_SZ], our_mac[SHANNON_MAC_SZ];
-    if (platform_tcp_read(s->sock, recv_mac, SHANNON_MAC_SZ) != 0) return -1;
+    if (platform_tcp_read(s->sock, recv_mac, SHANNON_MAC_SZ) != 0) {
+        fprintf(stderr, "[mercury] read mac fail\n");
+        return -1;
+    }
     platform_shannon_finish(s->recv_cipher, our_mac);
 
     if (memcmp(recv_mac, our_mac, SHANNON_MAC_SZ) != 0) {

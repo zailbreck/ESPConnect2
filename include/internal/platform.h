@@ -176,7 +176,7 @@ void platform_dh_generate_keypair(uint8_t pub_key[96], uint8_t priv_key[96]);
  *  Result is 96 bytes. */
 void platform_dh_compute_shared(const uint8_t priv_key[96],
                                 const uint8_t *peer_pub, size_t peer_pub_len,
-                                uint8_t shared[96]);
+                                uint8_t shared[96], size_t *out_len);
 
 /* ------------------------------------------------------------------ */
 /*  Crypto: Random                                                     */

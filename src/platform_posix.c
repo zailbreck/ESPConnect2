@@ -14,6 +14,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
+#ifndef _WIN32
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <netinet/in.h>
@@ -21,6 +22,11 @@
 #include <netdb.h>
 #include <arpa/inet.h>
 #include <poll.h>
+#else
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#define SHUT_RDWR SD_BOTH
+#endif
 #include <pthread.h>
 
 #include <openssl/evp.h>
@@ -55,7 +61,11 @@ platform_socket_t platform_tcp_connect(const char *host, int port) {
         if (sock < 0) continue;
         if (connect(sock, rp->ai_addr, rp->ai_addrlen) == 0) {
             int opt = 1;
+#ifdef _WIN32
+            setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, (const char *)&opt, sizeof(opt));
+#else
             setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
+#endif
             break;
         }
         close(sock);
@@ -68,7 +78,11 @@ platform_socket_t platform_tcp_connect(const char *host, int port) {
 void platform_tcp_close(platform_socket_t sock) {
     if (sock >= 0) {
         shutdown(sock, SHUT_RDWR);
+#ifdef _WIN32
+        closesocket(sock);
+#else
         close(sock);
+#endif
     }
 }
 
@@ -85,6 +99,9 @@ int platform_tcp_read(platform_socket_t sock, uint8_t *buf, size_t n) {
 int platform_tcp_write(platform_socket_t sock, const uint8_t *buf, size_t n) {
     size_t off = 0;
     while (off < n) {
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
         ssize_t w = send(sock, (const char *)buf + off, n - off, MSG_NOSIGNAL);
         if (w <= 0) return -1;
         off += w;
@@ -94,8 +111,13 @@ int platform_tcp_write(platform_socket_t sock, const uint8_t *buf, size_t n) {
 
 void platform_tcp_set_timeout(platform_socket_t sock, int seconds) {
     struct timeval tv = {seconds, 0};
+#ifdef _WIN32
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char *)&tv, sizeof(tv));
+#else
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+#endif
 }
 
 void platform_sleep_ms(int ms) {
@@ -113,11 +135,16 @@ struct platform_http_server_t {
 };
 
 platform_http_server_t *platform_http_server_start(int port) {
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) return NULL;
+    platform_socket_t fd = socket(AF_INET, SOCK_STREAM, 0);
 
     int opt = 1;
+#ifdef _WIN32
+    if (fd == INVALID_SOCKET) return NULL;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const char *)&opt, sizeof(opt));
+#else
+    if (fd < 0) return NULL;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+#endif
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
@@ -126,11 +153,19 @@ platform_http_server_t *platform_http_server_start(int port) {
     addr.sin_port = htons(port);
 
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+#ifdef _WIN32
+        closesocket(fd);
+#else
         close(fd);
+#endif
         return NULL;
     }
     if (listen(fd, 5) < 0) {
+#ifdef _WIN32
+        closesocket(fd);
+#else
         close(fd);
+#endif
         return NULL;
     }
 
@@ -151,11 +186,22 @@ void platform_http_server_stop(platform_http_server_t *srv) {
 }
 
 platform_socket_t platform_http_server_accept(platform_http_server_t *srv, int timeout_ms) {
+#ifndef _WIN32
     struct pollfd pfd;
     pfd.fd = srv->listen_fd;
     pfd.events = POLLIN;
     if (poll(&pfd, 1, timeout_ms) <= 0)
         return PLATFORM_SOCKET_INVALID;
+#else
+    fd_set readfds;
+    FD_ZERO(&readfds);
+    FD_SET(srv->listen_fd, &readfds);
+    struct timeval tv_select;
+    tv_select.tv_sec = timeout_ms / 1000;
+    tv_select.tv_usec = (timeout_ms % 1000) * 1000;
+    if (select((int)(srv->listen_fd) + 1, &readfds, NULL, NULL, &tv_select) <= 0)
+        return PLATFORM_SOCKET_INVALID;
+#endif
 
     struct sockaddr_in addr;
     socklen_t len = sizeof(addr);
@@ -304,7 +350,7 @@ void platform_dh_generate_keypair(uint8_t pub_key[96], uint8_t priv_key[96]) {
 
 void platform_dh_compute_shared(const uint8_t priv_key[96],
                                 const uint8_t *peer_pub, size_t peer_pub_len,
-                                uint8_t shared[96]) {
+                                uint8_t shared[96], size_t *out_len) {
     DH *dh = DH_new();
     BIGNUM *p = BN_bin2bn(dh_prime, sizeof(dh_prime), NULL);
     BIGNUM *g = BN_new();
@@ -320,9 +366,10 @@ void platform_dh_compute_shared(const uint8_t priv_key[96],
 
     if (ol < 0) {
         memset(shared, 0, 96);
-    } else if (ol < 96) {
-        memmove(shared + 96 - ol, shared, ol);
-        memset(shared, 0, 96 - ol);
+        *out_len = 0;
+    } else {
+        /* Do NOT pad with leading zeros! Librespot/cspot hash the exact bytes without padding! */
+        *out_len = (size_t)ol;
     }
     DH_free(dh);
 }
@@ -660,8 +707,13 @@ platform_tls_t *platform_tls_connect(const char *host, int port) {
     if (sock < 0) return NULL;
 
     struct timeval tv = {10, 0};
+#ifdef _WIN32
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char *)&tv, sizeof(tv));
+#else
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+#endif
 
     struct hostent *h = gethostbyname(host);
     if (!h) { close(sock); return NULL; }
