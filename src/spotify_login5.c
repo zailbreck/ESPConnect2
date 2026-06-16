@@ -142,7 +142,24 @@ int spotify_login5_get_token(const char *client_id, const char *device_id, const
     mbedtls_ssl_set_bio(&ssl, &server_fd, mbedtls_net_send, mbedtls_net_recv, NULL);
 
     while ((ret = mbedtls_ssl_handshake(&ssl)) != 0) {
-        if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) { fprintf(stderr, "mbedtls_ssl_handshake failed: -0x%04x\n", -ret); return -1; }
+        if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) { 
+            char error_buf[100];
+            mbedtls_strerror(ret, error_buf, 100);
+            fprintf(stderr, "
+
+===========================================
+");
+            fprintf(stderr, " [mbedtls ERROR] mbedtls_ssl_handshake failed!
+");
+            fprintf(stderr, "  Code : -0x%04x
+", -ret);
+            fprintf(stderr, "  Desc : %s
+", error_buf);
+            fprintf(stderr, "===========================================
+
+");
+            return -1; 
+        }
     }
 
     char http_req[2048];
