@@ -262,7 +262,9 @@ static void build_login_request(pb_buf_t *out,
 
     /* LoginCredentials (field 10) */
     pb_buf_t lc; pb_init(&lc, 256);
-    pb_str(&lc, 10, username);         // username = field 10
+    if (username && username[0] != '\0') {
+        pb_str(&lc, 10, username);         // username = field 10
+    }
     pb_enum(&lc, 20, auth_type);       // typ = field 20
     pb_bytes(&lc, 30, auth_data, ad_len); // auth_data = field 30
     pb_bytes(out, 10, lc.data, lc.size);  // login_credentials = field 10
