@@ -1162,7 +1162,7 @@ void signal_handler(int signal) {
 #endif
 
 int
-main(int argc, const char* const* argv) {
+mdns_main_disabled(int argc, const char* const* argv) {
 	int mode = 0;
 	const char* service = "_test-mdns._tcp.local.";
 	const char* hostname = "dummy-host";
