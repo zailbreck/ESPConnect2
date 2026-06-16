@@ -78,6 +78,7 @@ int spotify_login5_get_token(const char *client_id, const char *device_id, const
     mbedtls_ssl_context ssl;
     mbedtls_ssl_config conf;
 
+    psa_crypto_init();
     mbedtls_net_init(&server_fd);
     mbedtls_ssl_init(&ssl);
     mbedtls_ssl_config_init(&conf);
@@ -85,9 +86,9 @@ int spotify_login5_get_token(const char *client_id, const char *device_id, const
     mbedtls_entropy_init(&entropy);
 
     const char *pers = "spotify_login5";
-    if ((ret = mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy, (const unsigned char *)pers, strlen(pers))) != 0) return -1;
-    if ((ret = mbedtls_net_connect(&server_fd, LOGIN5_HOST, LOGIN5_PORT, MBEDTLS_NET_PROTO_TCP)) != 0) return -1;
-    if ((ret = mbedtls_ssl_config_defaults(&conf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT)) != 0) return -1;
+    if ((ret = mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy, (const unsigned char *)pers, strlen(pers))) != 0) { fprintf(stderr, "mbedtls_ctr_drbg_seed failed: %d\n", ret); return -1; }
+    if ((ret = mbedtls_net_connect(&server_fd, LOGIN5_HOST, LOGIN5_PORT, MBEDTLS_NET_PROTO_TCP)) != 0) { fprintf(stderr, "mbedtls_net_connect failed: %d\n", ret); return -1; }
+    if ((ret = mbedtls_ssl_config_defaults(&conf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT)) != 0) { fprintf(stderr, "mbedtls_ssl_config_defaults failed: %d\n", ret); return -1; }
 
     mbedtls_ssl_conf_authmode(&conf, MBEDTLS_SSL_VERIFY_NONE);
     mbedtls_ssl_conf_rng(&conf, mbedtls_ctr_drbg_random, &ctr_drbg);
@@ -96,7 +97,7 @@ int spotify_login5_get_token(const char *client_id, const char *device_id, const
     mbedtls_ssl_set_bio(&ssl, &server_fd, mbedtls_net_send, mbedtls_net_recv, NULL);
 
     while ((ret = mbedtls_ssl_handshake(&ssl)) != 0) {
-        if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) return -1;
+        if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) { fprintf(stderr, "mbedtls_ssl_handshake failed: -0x%04x\n", -ret); return -1; }
     }
 
     char http_req[2048];
