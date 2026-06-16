@@ -326,7 +326,7 @@ void platform_dh_generate_keypair(uint8_t pub_key[96], uint8_t priv_key[96]) {
     mbedtls_mpi_free(&G); mbedtls_mpi_free(&P);
 }
 
-void platform_dh_compute_shared_old2_old(const uint8_t priv_key[96],
+void platform_dh_compute_shared_old(const uint8_t priv_key[96],
                                 const uint8_t *peer_pub, size_t peer_pub_len,
                                 uint8_t shared[96]) {
     mbedtls_mpi P, G, X, GY, K;
@@ -834,7 +834,7 @@ void platform_http_response_free(platform_http_response_t *resp) {
 #include <ws2tcpip.h>
 
     
-void platform_dh_compute_shared_old2(const uint8_t priv_key[96],
+void platform_dh_compute_shared(const uint8_t priv_key[96],
                                 const uint8_t *peer_pub, size_t peer_pub_len,
                                 uint8_t shared[96], size_t *out_len) {
     mbedtls_mpi P, G, X, GY, K;
