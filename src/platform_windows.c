@@ -834,9 +834,6 @@ void platform_http_response_free(platform_http_response_t *resp) {
 #include <ws2tcpip.h>
 
     
-    mdns_socket_close(m->sock);
-    free(m);
-}
 void platform_dh_compute_shared_old2(const uint8_t priv_key[96],
                                 const uint8_t *peer_pub, size_t peer_pub_len,
                                 uint8_t shared[96], size_t *out_len) {
@@ -844,7 +841,7 @@ void platform_dh_compute_shared_old2(const uint8_t priv_key[96],
     mbedtls_mpi_init(&P); mbedtls_mpi_init(&G);
     mbedtls_mpi_init(&X); mbedtls_mpi_init(&GY); mbedtls_mpi_init(&K);
 
-    mbedtls_mpi_read_binary(&P, DH_P, 96);
+    mbedtls_mpi_read_binary(&P, dh_prime, 96);
     mbedtls_mpi_read_binary(&X, priv_key, 96);
     mbedtls_mpi_read_binary(&GY, peer_pub, peer_pub_len);
 
