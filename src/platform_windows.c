@@ -833,6 +833,7 @@ void platform_http_response_free(platform_http_response_t *resp) {
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
+    void platform_mdns_stop(platform_mdns_t *m) {
     if (!m) return;
     m->running = 0;
     if (m->thread) {
