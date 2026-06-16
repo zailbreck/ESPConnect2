@@ -450,19 +450,29 @@ int mercury_login5(mercury_session_t *s,
     size_t ar_len = 0;
     int ret;
 
+
     /* ---------- Decode auth data (URL-safe base64: - → +, _ → /) ---------- */
     uint8_t auth_data[2048];
     char b64_buf[2048];
     size_t b64_len = strlen(auth_data_b64);
-    if (b64_len >= sizeof(b64_buf)) b64_len = sizeof(b64_buf) - 1;
+    if (b64_len >= sizeof(b64_buf) - 5) b64_len = sizeof(b64_buf) - 5;
     memcpy(b64_buf, auth_data_b64, b64_len);
-    b64_buf[b64_len] = '\0';
+    
     for (size_t i = 0; i < b64_len; i++) {
         if (b64_buf[i] == '-') b64_buf[i] = '+';
         if (b64_buf[i] == '_') b64_buf[i] = '/';
     }
+    
+    /* Add padding if needed! */
+    while (b64_len % 4 != 0) {
+        b64_buf[b64_len] = '=';
+        b64_len++;
+    }
+    b64_buf[b64_len] = '\0';
+
     size_t ad_len = platform_base64_decode(b64_buf,
         b64_len, auth_data, sizeof(auth_data));
+
     if (ad_len < 10) {
         fprintf(stderr, "[%s] Bad auth data\n", TAG);
         return -2;
