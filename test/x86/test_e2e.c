@@ -1,18 +1,4 @@
 // test_e2e.c — Full End-to-End Pipeline Test
-// ===========================================
-// mDNS pair → Bell HTTP → DH decrypt → Login5 HTTPS Token Exchange → Mercury Login
-//
-// Build (Windows cross):
-//   x86_64-w64-mingw32-gcc -std=gnu11 -O2 -static \
-//       -I include -I include/internal -I mbedtls/include -I src -I nanopb \
-//       -DWIN32_LEAN_AND_MEAN -D_WIN32_WINNT=0x0600 \
-//       src/*.c src/spotify/login5/v3/*.c src/spotify/login5/v3/credentials/*.c src/spotify/login5/v3/challenges/*.c src/spotify/login5/v3/identifiers/*.c src/google/protobuf/*.c nanopb/*.c thirdparty/mdns.c thirdparty/mdnsd.c test/x86/test_e2e_patched.c \
-//       -Wl,--start-group mbedtls/library/libmbedtls.a mbedtls/library/libmbedcrypto.a \
-//       mbedtls/library/libmbedx509.a -Wl,--end-group \
-//       -lws2_32 -lpthread -lbcrypt -lshlwapi -lm \
-//       -o espconnect_e2e_live.exe
-//
-// License: MIT
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -29,26 +15,17 @@
 #include <string.h>
 #include <stdlib.h>
 
-/* ================================================================== */
-/*  Config (edit device name before building)                          */
-/* ================================================================== */
-
 #define DEVICE_NAME         "ESPConnect-LIVE"
 #define DEVICE_ID           "142137fd329622137a14901634264e6f332e2411"
 #define AP_HOST             "ap-gew4.spotify.com"
 #define AP_PORT             443
 #define BELL_PORT           7864
-#define PAIRING_TIMEOUT     600     /* seconds to wait for pairing */
+#define PAIRING_TIMEOUT     600
 
-/* Track GID: 0daEJMXc3b4ZMTnvtHpuTt (base62 decoded) */
 static const uint8_t TEST_TRACK_GID[16] = {
     0x06, 0xfa, 0xfd, 0xa4, 0x5f, 0x70, 0x4f, 0x18,
     0x88, 0x20, 0x10, 0xaa, 0x97, 0x2c, 0xdc, 0x6f,
 };
-
-/* ================================================================== */
-/*  Hex dump helper                                                     */
-/* ================================================================== */
 
 static void hex_dump(const char *label, const uint8_t *d, size_t n) {
     fprintf(stderr, "%s (%zu): ", label, n);
@@ -58,7 +35,6 @@ static void hex_dump(const char *label, const uint8_t *d, size_t n) {
     fprintf(stderr, "\n");
 }
 
-/* Hex decode (for file_id) */
 static int hex_decode_20(const char *hex_40, uint8_t *out) {
     for (int i = 0; i < 20; i++) {
         char nl = hex_40[i*2], nh = hex_40[i*2+1];
@@ -70,7 +46,6 @@ static int hex_decode_20(const char *hex_40, uint8_t *out) {
     return 0;
 }
 
-/* Base64 Decode helper */
 static int base64_decode(const char *in, size_t in_len, uint8_t *out, size_t *out_len) {
     static const int b64[256] = {
         -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
@@ -81,7 +56,14 @@ static int base64_decode(const char *in, size_t in_len, uint8_t *out, size_t *ou
         15,16,17,18,19,20,21,22,23,24,25,-1,-1,-1,-1,-1,
         -1,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,
         41,42,43,44,45,46,47,48,49,50,51,-1,-1,-1,-1,-1,
-        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1
     };
     int i = 0, j = 0;
     while (i < in_len && in[i] != '=') {
@@ -98,18 +80,13 @@ static int base64_decode(const char *in, size_t in_len, uint8_t *out, size_t *ou
     return 0;
 }
 
-/* ================================================================== */
-/*  Step 0: ZeroConf Pairing (mDNS + Bell HTTP + DH decrypt)           */
-/* ================================================================== */
-
 static char g_auth_b64[4096] = {0};
 static int g_auth_loaded = 0;
 static int   g_auth_type = 0;
 static char g_username[256] = {0};
 
-/* NEW: We will store the Access Token here after HTTPS Exchange */
 static char g_access_token_b64[2048] = {0};
-static int g_login_auth_type = 3; /* For Access Token */
+static int g_login_auth_type = 3;
 
 static int do_pairing(void) {
     fprintf(stderr, "\n===== STEP 0: ZEROCONF PAIRING =====\n");
@@ -138,7 +115,6 @@ static int do_pairing(void) {
 
     zeroconf_start(z);
 
-    /* Poll for pairing */
     int paired = 0;
     for (int waited = 0; waited < PAIRING_TIMEOUT; waited++) {
         int ret = zeroconf_poll(z, 1000);
@@ -174,20 +150,14 @@ static int do_pairing(void) {
     return 0;
 }
 
-/* ================================================================== */
-/*  Step 0.5: Login5 HTTPS Token Exchange                             */
-/* ================================================================== */
-
 static int do_login5_exchange(void) {
     fprintf(stderr, "\n===== STEP 0.5: LOGIN5 HTTPS EXCHANGE =====\n");
     
-    // 1. Decode base64 auth data
     uint8_t inner_blob[2048];
     size_t inner_blob_len = 0;
     base64_decode(g_auth_b64, strlen(g_auth_b64), inner_blob, &inner_blob_len);
     fprintf(stderr, "OK: Decoded %zu bytes of AuthBlob\n", inner_blob_len);
     
-    // 2. Perform HTTPS Post to login5.spotify.com
     uint8_t login5_response[2048];
     size_t login5_response_len = sizeof(login5_response);
     
@@ -209,7 +179,6 @@ static int do_login5_exchange(void) {
     
     fprintf(stderr, "OK: Received %zu bytes from Login5 API\n", login5_response_len);
     
-    // 3. Extract the Access Token string (BQA...) from Protobuf response
     ret = spotify_login5_extract_token(login5_response, login5_response_len, g_access_token_b64, sizeof(g_access_token_b64));
     
     if (ret != 0) {
@@ -223,10 +192,6 @@ static int do_login5_exchange(void) {
     return 0;
 }
 
-/* ================================================================== */
-/*  Step 1: Login5 via raw Mercury (using Access Token)               */
-/* ================================================================== */
-
 static mercury_session_t *do_mercury_login(void) {
     fprintf(stderr, "\n===== STEP 1: MERCURY AUTH =====\n");
 
@@ -236,7 +201,6 @@ static mercury_session_t *do_mercury_login(void) {
         return NULL;
     }
 
-    // Pass the newly acquired access_token and force auth_type = 3
     int ret = mercury_login5(sess, g_username, g_access_token_b64,
                               g_login_auth_type, DEVICE_ID, AP_HOST, AP_PORT);
     if (ret != 0) {
@@ -249,10 +213,6 @@ static mercury_session_t *do_mercury_login(void) {
     fprintf(stderr, "OK: logged in as '%s'\n", canon ? canon : "?");
     return sess;
 }
-
-/* ================================================================== */
-/*  Step 2: Client Token                                               */
-/* ================================================================== */
 
 static char g_client_token[2048] = {0};
 
@@ -269,10 +229,6 @@ static int do_client_token(mercury_session_t *sess) {
     return 0;
 }
 
-/* ================================================================== */
-/*  Step 3: Track Metadata                                             */
-/* ================================================================== */
-
 static spclient_track_meta_t g_track_meta = {0};
 
 static int do_track_metadata(void) {
@@ -286,10 +242,6 @@ static int do_track_metadata(void) {
     fprintf(stderr, "OK: %d file(s) found\n", g_track_meta.num_files);
     return 0;
 }
-
-/* ================================================================== */
-/*  Step 4: CDN Resolve                                                */
-/* ================================================================== */
 
 static char g_cdn_url[1024] = {0};
 
@@ -312,10 +264,6 @@ static int do_cdn_resolve(void) {
     fprintf(stderr, "OK: CDN URL resolved\n");
     return 0;
 }
-
-/* ================================================================== */
-/*  Step 5: AudioKey via Mercury                                        */
-/* ================================================================== */
 
 static uint8_t g_audio_key[16] = {0};
 static uint8_t g_file_id_bin[20] = {0};
@@ -342,10 +290,6 @@ static int do_audio_key(mercury_session_t *sess) {
     hex_dump("  key", g_audio_key, 16);
     return 0;
 }
-
-/* ================================================================== */
-/*  Step 6: Download & Decrypt one chunk                                */
-/* ================================================================== */
 
 static int do_download_decrypt(void) {
     fprintf(stderr, "\n===== STEP 6: CDN DOWNLOAD + DECRYPT =====\n");
@@ -379,10 +323,6 @@ static int do_download_decrypt(void) {
     return 0;
 }
 
-/* ================================================================== */
-/*  Main                                                               */
-/* ================================================================== */
-
 int main(void) {
 #ifdef _WIN32
     WSADATA wsaData;
@@ -393,14 +333,13 @@ int main(void) {
 #endif
     fprintf(stderr, "===========================================\n");
     fprintf(stderr, "  ESPConnect E2E LIVE mDNS Token Exchange Test\n");
-    fprintf(stderr, "  Version : v40 (Login5 AccessToken)\n");
+    fprintf(stderr, "  Version : v41 (Login5 AccessToken + Native mDNS Windows)\n");
     fprintf(stderr, "  Build   : %s %s\n", __DATE__, __TIME__);
     fprintf(stderr, "  Device  : %s\n", DEVICE_NAME);
     fprintf(stderr, "  Track   : 0daEJMXc3b4ZMTnvtHpuTt\n");
     fprintf(stderr, "  AP      : %s:%d\n", AP_HOST, AP_PORT);
     fprintf(stderr, "===========================================\n\n");
 
-    /* STEP 0: Pairing */
     if (do_pairing() != 0) {
         fprintf(stderr, "\n❌ E2E test FAILED at step 0 (Pairing)\n");
         fprintf(stderr, "\n[PRESS ENTER TO EXIT]\n");
@@ -408,7 +347,6 @@ int main(void) {
         return 1;
     }
 
-    /* STEP 0.5: Exchange Token */
     if (do_login5_exchange() != 0) {
         fprintf(stderr, "\n❌ E2E test FAILED at step 0.5 (Login5 HTTPS Token Exchange)\n");
         fprintf(stderr, "\n[PRESS ENTER TO EXIT]\n");
@@ -416,11 +354,9 @@ int main(void) {
         return 1;
     }
 
-    /* Rate limit wait */
     fprintf(stderr, "\n[WAIT] 2s before connecting to AP...\n");
     platform_sleep_ms(2000);
 
-    /* STEP 1-6: Auth + Pipeline */
     mercury_session_t *sess = do_mercury_login();
     if (!sess) {
         fprintf(stderr, "\n❌ FAILED at step 1 (Login5 Mercury AP)\n");
