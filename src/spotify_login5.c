@@ -8,6 +8,8 @@
 #include "mbedtls/entropy.h"
 #include "mbedtls/ctr_drbg.h"
 #include "mbedtls/error.h"
+#include "mbedtls/x509_crt.h"
+
 
 // Note: nanopb files will be compiled along with this
 #include "pb_encode.h"
@@ -82,6 +84,92 @@ int spotify_login5_get_token(const char *client_id, const char *device_id, const
     mbedtls_net_init(&server_fd);
     mbedtls_ssl_init(&ssl);
     mbedtls_ssl_config_init(&conf);
+
+    mbedtls_x509_crt cacert;
+    mbedtls_x509_crt_init(&cacert);
+    const char *ca_pem = \
+        "-----BEGIN CERTIFICATE-----
+"\
+        "MIIGvzCCBaegAwIBAgIQBKe2zOxUs2zxRsDo2Mw4OTANBgkqhkiG9w0BAQsFADBZ
+"\
+        "MQswCQYDVQQGEwJVUzEVMBMGA1UEChMMRGlnaUNlcnQgSW5jMTMwMQYDVQQDEypE
+"\
+        "aWdpQ2VydCBHbG9iYWwgRzIgVExTIFJTQSBTSEEyNTYgMjAyMCBDQTEwHhcNMjUx
+"\
+        "MjA4MDAwMDAwWhcNMjYxMjA4MjM1OTU5WjBOMQswCQYDVQQGEwJTRTESMBAGA1UE
+"\
+        "BxMJU3RvY2tob2xtMRMwEQYDVQQKEwpTcG90aWZ5IEFCMRYwFAYDVQQDDA0qLnNw
+"\
+        "b3RpZnkuY29tMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtMomjLiz
+"\
+        "IpazOPFmBWA0E8TPf2u1H1ur0GGGuVeIxwFKJXgSFDY1HZhYXHwCBWLN61oTqFAx
+"\
+        "5cY6p9FTri2ceDQVeJr+3Kz0Kq9t2ajNUnuzTwO4Va9ATq6NW8x2ryiDqVgvtd0j
+"\
+        "cCi2lX+zCTi5RFYz2lhegnazS+TR9IkgQ8Kzx7JlX0B513c5ieNngW43GN0pBuNG
+"\
+        "SBPdIQT7maXaoLEBRpO+HdpslWR01VJGUny5W+8uCZTw9NvamhxyntaWWj+LSMdO
+"\
+        "BQg7fhVPdwDo9DFKhr1GCwhIrthxbLA3ACmC8uJj6Kf545YS0mkopofDD3cSq/Nu
+"\
+        "qYj5OLyc2ggsYQIDAQABo4IDjDCCA4gwHwYDVR0jBBgwFoAUdIWAwGbH3zfez70p
+"\
+        "N6oDHb7tzRcwHQYDVR0OBBYEFKriKIha1eaDHC2YxPR/8XNrz3TaMCUGA1UdEQQe
+"\
+        "MByCDSouc3BvdGlmeS5jb22CC3Nwb3RpZnkuY29tMD4GA1UdIAQ3MDUwMwYGZ4EM
+"\
+        "AQICMCkwJwYIKwYBBQUHAgEWG2h0dHA6Ly93d3cuZGlnaWNlcnQuY29tL0NQUzAO
+"\
+        "BgNVHQ8BAf8EBAMCBaAwEwYDVR0lBAwwCgYIKwYBBQUHAwEwgZ8GA1UdHwSBlzCB
+"\
+        "lDBIoEagRIZCaHR0cDovL2NybDMuZGlnaWNlcnQuY29tL0RpZ2lDZXJ0R2xvYmFs
+"\
+        "RzJUTFNSU0FTSEEyNTYyMDIwQ0ExLTEuY3JsMEigRqBEhkJodHRwOi8vY3JsNC5k
+"\
+        "aWdpY2VydC5jb20vRGlnaUNlcnRHbG9iYWxHMlRMU1JTQVNIQTI1NjIwMjBDQTEt
+"\
+        "MS5jcmwwgYcGCCsGAQUFBwEBBHsweTAkBggrBgEFBQcwAYYYaHR0cDovL29jc3Au
+"\
+        "ZGlnaWNlcnQuY29tMFEGCCsGAQUFBzAChkVodHRwOi8vY2FjZXJ0cy5kaWdpY2Vy
+"\
+        "dC5jb20vRGlnaUNlcnRHbG9iYWxHMlRMU1JTQVNIQTI1NjIwMjBDQTEtMS5jcnQw
+"\
+        "DAYDVR0TAQH/BAIwADCCAX4GCisGAQQB1nkCBAIEggFuBIIBagFoAHYA2AlVO5RP
+"\
+        "ev/IFhlvlE+Fq7D4/F6HVSYPFdEucrtFSxQAAAGa/MK2EgAABAMARzBFAiBzI7yy
+"\
+        "vuop7w8Wal8QCm7MWrLAB3RMfcSmvreXNw2zawIhAMRmBCsWc30eoOzJEGp1Vtmo
+"\
+        "p6S5TOS066Lt5RVldbv1AHcAyKPEf8ezrbk1awE/anoSbeM6TkOlxkb5l605dZkd
+"\
+        "z5oAAAGa/MK2HAAABAMASDBGAiEArLqDD1x902xTrgpmqJtQd6WXWyhCwUXFlDbE
+"\
+        "LM09UZkCIQDr5546V2pQkwzYiBl8ZXytVAfFqswtFf872TcJAOJD6wB1AMIxfldF
+"\
+        "GaNF7n843rKQQevHwiFaIr9/1bWtdprZDlLNAAABmvzCtiAAAAQDAEYwRAIgNhJM
+"\
+        "A+3jgHZ6DD96mueHZwyGoA609jQRfusDr2Fm+ggCIDAMRN0oAcyGBNL8N8iEOJ7m
+"\
+        "PgEtSVwMUnMnuv6huJ0+MA0GCSqGSIb3DQEBCwUAA4IBAQC7AT2ucxk2Q/Uw+exC
+"\
+        "cu1FZhy7ylgmpK9o2ChwrYjRJ5ewW+PqGJeZWiuPHByyVLRaC4Z7LPum0IXW6pdh
+"\
+        "MEvknFo9gwjO1XoCRtsJaQikWn48WvZr+goD3hDxEXuFDwthc12kiptvWmuNmA5m
+"\
+        "CmY8IyVFhvXBGEEr3PwBqQNWBkuqNvfY8kAkm33GvBI4jrDAuOY9Y7xSoCkjQQc2
+"\
+        "xX1yjh3xmOD91ZFKEChUD6ndzxBktsrbHeSUXQOeqpaSpQ/lxecDTW1woWdHRcVD
+"\
+        "hiT5rwZB0a50DdOFyHnzVdVYcmbZOmexTW0phQR0zTxcw1Z/OZQVmM85gMNL2sOx
+"\
+        "aMaW
+"\
+        "-----END CERTIFICATE-----
+"\
+        ;
+    mbedtls_x509_crt_parse(&cacert, (const unsigned char *)ca_pem, strlen(ca_pem) + 1);
+    mbedtls_ssl_conf_ca_chain(&conf, &cacert, NULL);
+
     mbedtls_ctr_drbg_init(&ctr_drbg);
     mbedtls_entropy_init(&entropy);
 
@@ -137,6 +225,7 @@ int spotify_login5_get_token(const char *client_id, const char *device_id, const
     } while (1);
 
     mbedtls_ssl_close_notify(&ssl);
+    mbedtls_x509_crt_free(&cacert);
     mbedtls_net_free(&server_fd);
     mbedtls_ssl_free(&ssl);
     mbedtls_ssl_config_free(&conf);
