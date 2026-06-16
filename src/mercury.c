@@ -444,7 +444,7 @@ int mercury_login5(mercury_session_t *s,
                    const char *device_id,
                    const char *ap_host,
                    int ap_port) {
-    if (!s || !username || !auth_data_b64 || !device_id || !ap_host)
+    if (!s || !auth_data_b64 || !device_id || !ap_host)
         return -1;
     if (ap_port <= 0) ap_port = 443;
 
