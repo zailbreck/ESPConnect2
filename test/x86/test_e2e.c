@@ -177,7 +177,23 @@ static int do_login5_exchange(void) {
         return -1;
     }
     
+    
     fprintf(stderr, "OK: Received %zu bytes from Login5 API\n", login5_response_len);
+    fprintf(stderr, "=== RAW PROTOBUF RESPONSE ===\n");
+    for(size_t i=0; i<login5_response_len; i++) {
+        fprintf(stderr, "%02x ", login5_response[i]);
+        if ((i+1) % 16 == 0) fprintf(stderr, "\n");
+    }
+    fprintf(stderr, "\n=== END PROTOBUF ===\n");
+    
+    // Also try to print it as ASCII to see strings
+    fprintf(stderr, "=== ASCII DUMP ===\n");
+    for(size_t i=0; i<login5_response_len; i++) {
+        if (login5_response[i] >= 32 && login5_response[i] <= 126) fputc(login5_response[i], stderr);
+        else fputc('.', stderr);
+    }
+    fprintf(stderr, "\n==================\n");
+
     
     ret = spotify_login5_extract_token(login5_response, login5_response_len, g_access_token_b64, sizeof(g_access_token_b64));
     
