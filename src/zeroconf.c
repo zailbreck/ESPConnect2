@@ -253,8 +253,9 @@ static int process_blob(const char *blob_b64, const char *username,
     fprintf(stderr, "[%s] AuthData length: %u bytes\n", TAG, ad_len);
 
     if (pos + ad_len <= inner_len) {
-        platform_base64_encode(inner_blob + pos, ad_len,
-                               auth_data_b64, auth_b64_size);
+        if (ad_len >= auth_b64_size) ad_len = auth_b64_size - 1;
+        memcpy(auth_data_b64, inner_blob + pos, ad_len);
+        auth_data_b64[ad_len] = '\0';
         fprintf(stderr, "[%s] AuthData (b64): %s\n", TAG, auth_data_b64);
         free(inner_blob);
         return 0;
