@@ -326,7 +326,7 @@ void platform_dh_generate_keypair(uint8_t pub_key[96], uint8_t priv_key[96]) {
     mbedtls_mpi_free(&G); mbedtls_mpi_free(&P);
 }
 
-void platform_dh_compute_shared(const uint8_t priv_key[96],
+void platform_dh_compute_shared_old(const uint8_t priv_key[96],
                                 const uint8_t *peer_pub, size_t peer_pub_len,
                                 uint8_t shared[96]) {
     mbedtls_mpi P, G, X, GY, K;
@@ -842,4 +842,24 @@ void platform_http_response_free(platform_http_response_t *resp) {
     }
     mdns_socket_close(m->sock);
     free(m);
+}
+void platform_dh_compute_shared(const uint8_t priv_key[96],
+                                const uint8_t *peer_pub, size_t peer_pub_len,
+                                uint8_t shared[96], size_t *out_len) {
+    mbedtls_mpi P, G, X, GY, K;
+    mbedtls_mpi_init(&P); mbedtls_mpi_init(&G);
+    mbedtls_mpi_init(&X); mbedtls_mpi_init(&GY); mbedtls_mpi_init(&K);
+
+    mbedtls_mpi_read_binary(&P, DH_P, 96);
+    mbedtls_mpi_read_binary(&X, priv_key, 96);
+    mbedtls_mpi_read_binary(&GY, peer_pub, peer_pub_len);
+
+    mbedtls_mpi_exp_mod(&K, &GY, &X, &P, NULL);
+    
+    size_t s_len = mbedtls_mpi_size(&K);
+    *out_len = s_len;
+    mbedtls_mpi_write_binary(&K, shared, s_len);
+
+    mbedtls_mpi_free(&P); mbedtls_mpi_free(&G);
+    mbedtls_mpi_free(&X); mbedtls_mpi_free(&GY); mbedtls_mpi_free(&K);
 }
