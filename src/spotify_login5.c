@@ -196,8 +196,8 @@ int spotify_login5_get_token(const char *client_id, const char *device_id, const
              "Connection: close\r\n"
              "\r\n", LOGIN5_PATH, LOGIN5_HOST, payload_len);
 
-    mbedtls_ssl_write(&ssl, (const unsigned char *)http_req, strlen(http_req));
-    mbedtls_ssl_write(&ssl, payload, payload_len);
+    int w1 = mbedtls_ssl_write(&ssl, (const unsigned char *)http_req, strlen(http_req)); if (w1 < 0) { fprintf(stderr, "FAIL: mbedtls_ssl_write http_req returned %d\n", w1); return -1; }
+    int w2 = mbedtls_ssl_write(&ssl, payload, payload_len); if (w2 < 0) { fprintf(stderr, "FAIL: mbedtls_ssl_write payload returned %d\n", w2); return -1; }
 
     unsigned char buf[2048];
     int len;
@@ -230,10 +230,10 @@ int spotify_login5_get_token(const char *client_id, const char *device_id, const
     mbedtls_ctr_drbg_free(&ctr_drbg);
     mbedtls_entropy_free(&entropy);
 
-    if (payload_offset == -1) return -1;
+    if (payload_offset == -1) { fprintf(stderr, "FAIL: payload_offset == -1 (no HTTP headers found)\n"); return -1; }
     
     size_t proto_len = total_recv - payload_offset;
-    if (proto_len > *access_token_out_len) return -1;
+    if (proto_len > *access_token_out_len) { fprintf(stderr, "FAIL: proto_len %zu > max %zu\n", proto_len, *access_token_out_len); return -1; }
     
     memcpy(access_token_out, buf + payload_offset, proto_len);
     *access_token_out_len = proto_len;
