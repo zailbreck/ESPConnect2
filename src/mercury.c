@@ -477,7 +477,7 @@ int mercury_login5(mercury_session_t *s,
             b64_buf[b64_len] = '=';
             b64_len++;
         }
-        b64_buf[b64_len] = ' ';
+        b64_buf[b64_len] = '\0';
 
         ad_len = platform_base64_decode(b64_buf,
             b64_len, auth_data, sizeof(auth_data));
