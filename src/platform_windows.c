@@ -917,7 +917,7 @@ static mdns_record_t create_txt_record(platform_mdns_t *m, mdns_string_t instanc
 
 static void send_announcement(platform_mdns_t *m) {
     char svc_str[128];
-    snprintf(svc_str, sizeof(svc_str), "%s.local.", m->service_type);
+    snprintf(svc_str, sizeof(svc_str), "%s.", m->service_type);
     
     char inst_str[256];
     snprintf(inst_str, sizeof(inst_str), "%s.%s", m->service_name, svc_str);
@@ -956,7 +956,7 @@ static int mdns_query_callback(int sock, const struct sockaddr* from, size_t add
     mdns_string_t namestr = mdns_string_extract(data, size, &name_offset, namebuf, sizeof(namebuf));
     
     char expected_type[128];
-    snprintf(expected_type, sizeof(expected_type), "%s.local.", m->service_type);
+    snprintf(expected_type, sizeof(expected_type), "%s.", m->service_type);
     
     if ((rtype == MDNS_RECORDTYPE_PTR || rtype == MDNS_RECORDTYPE_ANY) && 
         strncmp(namestr.str, expected_type, namestr.length) == 0) {
@@ -972,6 +972,7 @@ static DWORD WINAPI mdns_thread(LPVOID arg) {
     
     send_announcement(m); // Initial announce
     
+    int loop_counter = 0;
     while (m->running) {
         struct timeval tv = {1, 0}; // 1 second timeout
         fd_set rfds;
@@ -980,9 +981,17 @@ static DWORD WINAPI mdns_thread(LPVOID arg) {
         if (select(0, &rfds, NULL, NULL, &tv) > 0) {
             mdns_socket_listen(m->sock, buffer, sizeof(buffer), mdns_query_callback, m);
         }
+        
+        loop_counter++;
+        if (loop_counter >= 3) {
+            // Unsolicited announce every 3 seconds to ensure discovery
+            send_announcement(m);
+            loop_counter = 0;
+        }
     }
     return 0;
 }
+
 
 platform_mdns_t *platform_mdns_start(const char *hostname) {
     platform_mdns_t *m = calloc(1, sizeof(*m));
@@ -1001,7 +1010,7 @@ platform_mdns_t *platform_mdns_start(const char *hostname) {
 
     strncpy(m->hostname, hostname, sizeof(m->hostname) - 1);
 
-    m->sock = mdns_socket_open_ipv4(&m->addr);
+    m->sock = mdns_socket_open_ipv4(NULL);
     if (m->sock < 0) {
         free(m);
         return NULL;
