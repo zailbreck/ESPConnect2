@@ -145,19 +145,11 @@ int spotify_login5_get_token(const char *client_id, const char *device_id, const
         if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) { 
             char error_buf[100];
             mbedtls_strerror(ret, error_buf, 100);
-            fprintf(stderr, "
-
-===========================================
-");
-            fprintf(stderr, " [mbedtls ERROR] mbedtls_ssl_handshake failed!
-");
-            fprintf(stderr, "  Code : -0x%04x
-", -ret);
-            fprintf(stderr, "  Desc : %s
-", error_buf);
-            fprintf(stderr, "===========================================
-
-");
+            fprintf(stderr, "\n\n===========================================\n");
+            fprintf(stderr, " [mbedtls ERROR] mbedtls_ssl_handshake failed!\n");
+            fprintf(stderr, "  Code : -0x%04x\n", -ret);
+            fprintf(stderr, "  Desc : %s\n", error_buf);
+            fprintf(stderr, "===========================================\n\n");
             return -1; 
         }
     }
