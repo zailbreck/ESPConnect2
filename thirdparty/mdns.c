@@ -1,3 +1,5 @@
+#define in4addr_any_win (*(struct in_addr *)&in4addr_any_init)
+static const struct in_addr in4addr_any_init = { 0 };
 
 #ifdef _WIN32
 #define _CRT_SECURE_NO_WARNINGS 1
@@ -669,7 +671,7 @@ open_service_sockets(int* sockets, int max_sockets) {
 		memset(&sock_addr, 0, sizeof(struct sockaddr_in));
 		sock_addr.sin_family = AF_INET;
 #ifdef _WIN32
-		sock_addr.sin_addr = in4addr_any;
+		sock_addr.sin_addr = in4addr_any_win;
 #else
 		sock_addr.sin_addr.s_addr = INADDR_ANY;
 #endif
