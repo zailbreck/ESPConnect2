@@ -67,7 +67,11 @@ static int base64_decode(const char *in, size_t in_len, uint8_t *out, size_t *ou
     };
     int i = 0, j = 0;
     while (i < in_len && in[i] != '=') {
-        int v = b64[(unsigned char)in[i]];
+        int v = -1;
+        if (in[i] == '-') v = 62;
+        else if (in[i] == '_') v = 63;
+        else v = b64[(unsigned char)in[i]];
+        
         if (v == -1) break;
         int d = i % 4;
         if (d == 0) out[j] = v << 2;
