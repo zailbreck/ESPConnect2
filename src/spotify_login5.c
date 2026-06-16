@@ -156,7 +156,7 @@ int spotify_login5_get_token(const char *client_id, const char *device_id, const
 "JCqVJUzKoZHm1Lesh3Sz8W2jmdv51b2EQJ8HmA==\n"
 "-----END CERTIFICATE-----\n"
 ;
-    mbedtls_x509_crt_parse(&cacert, (const unsigned char *)ca_pem, strlen(ca_pem) + 1);
+    int crt_ret = mbedtls_x509_crt_parse(&cacert, (const unsigned char *)ca_pem, strlen(ca_pem) + 1); if (crt_ret != 0) { fprintf(stderr, "FAIL: mbedtls_x509_crt_parse returned %d\n", crt_ret); return -1; }
     mbedtls_ssl_conf_ca_chain(&conf, &cacert, NULL);
 
     mbedtls_ctr_drbg_init(&ctr_drbg);
@@ -167,7 +167,7 @@ int spotify_login5_get_token(const char *client_id, const char *device_id, const
     if ((ret = mbedtls_net_connect(&server_fd, LOGIN5_HOST, LOGIN5_PORT, MBEDTLS_NET_PROTO_TCP)) != 0) { fprintf(stderr, "mbedtls_net_connect failed: %d\n", ret); return -1; }
     if ((ret = mbedtls_ssl_config_defaults(&conf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT)) != 0) { fprintf(stderr, "mbedtls_ssl_config_defaults failed: %d\n", ret); return -1; }
 
-    mbedtls_ssl_conf_authmode(&conf, MBEDTLS_SSL_VERIFY_NONE);
+    mbedtls_ssl_conf_authmode(&conf, MBEDTLS_SSL_VERIFY_REQUIRED);
     mbedtls_ssl_conf_rng(&conf, mbedtls_ctr_drbg_random, &ctr_drbg);
     mbedtls_ssl_setup(&ssl, &conf);
     mbedtls_ssl_set_hostname(&ssl, LOGIN5_HOST);
