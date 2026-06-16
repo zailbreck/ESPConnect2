@@ -333,7 +333,7 @@ int main(void) {
 #endif
     fprintf(stderr, "===========================================\n");
     fprintf(stderr, "  ESPConnect E2E LIVE mDNS Token Exchange Test\n");
-    fprintf(stderr, "  Version : v41 (Login5 AccessToken + Native mDNS Windows)\n");
+    fprintf(stderr, "  Version : v42 (Login5 AccessToken + Native mDNS Windows)\n");
     fprintf(stderr, "  Build   : %s %s\n", __DATE__, __TIME__);
     fprintf(stderr, "  Device  : %s\n", DEVICE_NAME);
     fprintf(stderr, "  Track   : 0daEJMXc3b4ZMTnvtHpuTt\n");
