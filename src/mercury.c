@@ -300,12 +300,14 @@ static void compute_auth_challenge(
     memcpy(cb, hello_pkt, hello_pkt_len);
     memcpy(cb + hello_pkt_len, ap_resp, ap_resp_len);
 
-    /* 5 rounds: HMAC-SHA1(shared, cb + [x]) — matches cspot vector insert */
+    /* FIX #5 (HMAC byte order): byte counter x must be PREPENDED (at index 0),
+     * not appended. cspot C++ code: vector<uint8_t>(1, i) then insert(end, cb.begin...).
+     * Means layout is: [x][cb...], NOT [cb...][x]. */
     uint8_t *dst = result_out;
     for (int x = 1; x < 6; x++) {
         uint8_t *cv = malloc(cb_len + 1);
-        memcpy(cv, cb, cb_len);
-        cv[cb_len] = (uint8_t)x;  /* x at END because C++ insert(begin) pushes existing element to the end! */
+        cv[0] = (uint8_t)x;          /* x di AWAL — prepend */
+        memcpy(cv + 1, cb, cb_len);  /* cb menyusul setelahnya */
         platform_hmac_sha1(shared, shared_len, cv, cb_len + 1, dst);
         free(cv);
         dst += 20;
@@ -457,7 +459,9 @@ int mercury_login5(mercury_session_t *s,
     uint8_t auth_data[2048];
     size_t ad_len = 0;
     
-    if (auth_type == 3) {
+    /* FIX #8 (auth type): AUTHENTICATION_SPOTIFY_TOKEN = 2, bukan 3.
+     * 3 = AUTHENTICATION_FACEBOOK_TOKEN. */
+    if (auth_type == 2) {
         // AUTHENTICATION_SPOTIFY_TOKEN (OAuth) is just the ASCII token string
         ad_len = strlen(auth_data_b64);
         if (ad_len > sizeof(auth_data)) ad_len = sizeof(auth_data);
@@ -623,8 +627,10 @@ int mercury_login5(mercury_session_t *s,
     pb_buf_t cr_buf;
     build_client_resp(&cr_buf, challenge);  /* challenge[0:20] = hmac answer */
 
-    /* Send WITHOUT prefix (empty prefix array) */
-    ret = tcp_send_packet(s->sock, NULL, 0, cr_buf.data, cr_buf.size, NULL, NULL);
+    /* FIX #4 (ClientResponse framing): ClientResponsePlaintext harus dikirim
+     * sebagai raw protobuf TANPA length prefix apapun. tcp_send_packet() selalu
+     * menambahkan 4-byte BE length header yang tidak seharusnya ada di sini. */
+    ret = platform_tcp_write(s->sock, cr_buf.data, cr_buf.size);
     pb_free(&cr_buf);
     if (ret != 0) {
         fprintf(stderr, "[%s] ClientResp send fail\n", TAG);
@@ -668,15 +674,16 @@ int mercury_login5(mercury_session_t *s,
     size_t rx_len = 0;
     uint8_t cmd = 0;
 
+    /* FIX #9 (PING cmd): PING dari server adalah 0x04, bukan 0x00.
+     * 0x49 = PONG_ACK yang dikirim client — sudah benar. */
     for (int retry = 0; retry < 10; retry++) {
         if (mercury_recv(s, &cmd, rx_data, &rx_len, sizeof(rx_data)) != 0) {
             fprintf(stderr, "[%s] Recv fail\n", TAG);
             return -9;
         }
-        if (cmd == 0x00) {
-            /* PING → PONG */
-            uint8_t empty = 0;
-            mercury_send(s, 0x49, &empty, 0);
+        if (cmd == 0x04) {
+            /* PING dari server → balas dengan PONG_ACK */
+            mercury_send(s, 0x49, NULL, 0);
             fprintf(stderr, "[%s] PING/PONG\n", TAG);
             continue;
         }
@@ -692,34 +699,34 @@ int mercury_login5(mercury_session_t *s,
         pb_reader_init(&aw, rx_data, rx_len);
 
         uint32_t f, w;
+        /* FIX #6 (APWelcome field numbers): field numbers harus sesuai
+         * keyexchange.proto / cspot APWelcome:
+         *   field 1 = canonical_username (string)
+         *   field 2 = account_type       (varint)
+         *   field 5 = reusable_credentials_type (varint)
+         *   field 6 = reusable_credentials      (bytes)
+         * Sebelumnya salah: 10,20,30,40,50 */
         while (pb_read_tag(&aw, &f, &w)) {
-            if (f == 10 && w == PB_LENGTH_DELIM) {
+            if (f == 1 && w == PB_LENGTH_DELIM) {
                 size_t ulen = pb_read_bytes_copy(&aw,
                     (uint8_t *)s->canonical_username,
                     sizeof(s->canonical_username) - 1);
                 s->canonical_username[ulen] = '\0';
                 fprintf(stderr, "[%s] Canonical: %s\n", TAG, s->canonical_username);
-            } else if (f == 20 && w == PB_VARINT) {
+            } else if (f == 2 && w == PB_VARINT) {
                 uint64_t at = pb_read_varint_raw(&aw);
-                fprintf(stderr, "[%s] Account: %s\n", TAG,
-                        at == 0 ? "Spotify" : "Facebook");
-            } else if (f == 30 && w == PB_VARINT) {
-                /* auth_type in reusable */
+                fprintf(stderr, "[%s] Account type: %llu\n", TAG, (unsigned long long)at);
+            } else if (f == 5 && w == PB_VARINT) {
+                /* reusable_credentials_type */
                 pb_read_varint_raw(&aw);
-            } else if (f == 40 && w == PB_LENGTH_DELIM) {
+            } else if (f == 6 && w == PB_LENGTH_DELIM) {
                 s->stored_cred_len = pb_read_bytes_copy(&aw,
                     s->stored_cred, sizeof(s->stored_cred));
-                /* Base64 encode for display */
                 char b64[4096];
                 platform_base64_encode(s->stored_cred, s->stored_cred_len,
                                        b64, sizeof(b64));
                 fprintf(stderr, "[%s] Reusable: %zuB\n", TAG, s->stored_cred_len);
                 fprintf(stderr, "[%s] Token: %s\n", TAG, b64);
-            } else if (f == 50 && w == PB_LENGTH_DELIM) {
-                size_t dn_len = pb_read_bytes_copy(&aw,
-                    (uint8_t *)s->display_name,
-                    sizeof(s->display_name) - 1);
-                s->display_name[dn_len] = '\0';
             } else {
                 pb_skip(&aw, w);
             }
@@ -791,27 +798,15 @@ int mercury_recv(mercury_session_t *s, uint8_t *cmd,
                  uint8_t *data, size_t *out_len, size_t max_len) {
     if (!s || s->sock == PLATFORM_SOCKET_INVALID) return -1;
 
-    uint8_t hdr[4];
-    if (platform_tcp_read(s->sock, hdr, 4) != 0) {
+    /* FIX #7 (mercury_recv header size): Shannon packet header adalah tepat 3 byte
+     * [cmd(1) | len_hi(1) | len_lo(1)]. Membaca 4 byte menggeser socket buffer
+     * dan menyebabkan Shannon state tidak sinkron → semua MAC mismatch. */
+    uint8_t hdr[3];
+    if (platform_tcp_read(s->sock, hdr, 3) != 0) {
         fprintf(stderr, "[mercury] read hdr fail\n");
         return -1;
     }
-    fprintf(stderr, "[mercury] RAW hdr hex = %02x %02x %02x %02x\n", hdr[0], hdr[1], hdr[2], hdr[3]);
-
-    /* The server might send an unencrypted APResponseMessage (e.g. APLoginFailed) if LoginReq fails. */
-    if (hdr[0] == 0x00 && hdr[1] == 0x00 && hdr[2] == 0x00) {
-        uint32_t tot = (hdr[0]<<24)|(hdr[1]<<16)|(hdr[2]<<8)|hdr[3];
-        uint8_t err_buf[256];
-        if (tot > 4 && tot <= sizeof(err_buf) + 4) {
-            platform_tcp_read(s->sock, err_buf, tot - 4);
-            /* Parse for login_failed (field 30 = 0xF2 0x01) */
-            if (err_buf[0] == 0xf2 && err_buf[1] == 0x01) {
-                fprintf(stderr, "[mercury] Server returned APLoginFailed (BadCredentials/etc)\n");
-                return -9; /* Authentication failed */
-            }
-        }
-        return -1;
-    }
+    fprintf(stderr, "[mercury] RAW hdr hex = %02x %02x %02x\n", hdr[0], hdr[1], hdr[2]);
 
     /* Set nonce before decrypting */
     uint8_t nonce[4];

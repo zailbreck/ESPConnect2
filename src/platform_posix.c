@@ -361,15 +361,22 @@ void platform_dh_compute_shared(const uint8_t priv_key[96],
     DH_set0_key(dh, NULL, sk);
 
     BIGNUM *rb = BN_bin2bn(peer_pub, (int)peer_pub_len, NULL);
+    /* FIX #2 (DH padding): Always write into a zeroed 96-byte buffer so that
+     * leading zeros are preserved. OpenSSL DH_compute_key() strips them,
+     * which changes the HMAC challenge input and breaks key derivation. */
+    memset(shared, 0, 96);
     int ol = DH_compute_key(shared, rb, dh);
     BN_free(rb);
 
     if (ol < 0) {
-        memset(shared, 0, 96);
         *out_len = 0;
     } else {
-        /* Do NOT pad with leading zeros! Librespot/cspot hash the exact bytes without padding! */
-        *out_len = (size_t)ol;
+        /* Pad result to 96 bytes (zero-fill left side if shorter) */
+        if (ol < 96) {
+            memmove(shared + (96 - ol), shared, (size_t)ol);
+            memset(shared, 0, (size_t)(96 - ol));
+        }
+        *out_len = 96;
     }
     DH_free(dh);
 }
@@ -429,7 +436,7 @@ size_t platform_base64_encode(const uint8_t *in, size_t in_len,
 
 #define SHANNON_N       16
 #define SHANNON_FOLD    16
-#define SHANNON_INITKONST 0x6996c53a
+#define SHANNON_INITKONST 0x6996c75a  /* FIX #1: was 0x6996c53a (typo: c5→c7) */
 #define SHANNON_KEYP     13
 
 struct platform_shannon_t {
@@ -681,12 +688,20 @@ void platform_shannon_decrypt(platform_shannon_t *s, uint8_t *buf, size_t nbytes
 }
 
 void platform_shannon_finish(platform_shannon_t *s, uint8_t mac[4]) {
-    if (s->nbuf) {
+    /* FIX #3 (shannon_finish): flush partial word into MAC accumulator first */
+    if (s->nbuf != 0) {
         shannon_macfunc(s, s->mbuf);
+        s->nbuf = 0;
     }
-    shannon_cycle(s);
-    uint32_t t = s->CRC[0] ^ s->CRC[2] ^ s->CRC[15] ^ SHANNON_INITKONST;
-    WORD2BYTE(t, mac);
+    /* Mix all 16 CRC words into the LFSR via macfunc, then run extra diffusion.
+     * This matches cspot Shannon::finish() / librespot Shannon::finish(). */
+    s->konst = SHANNON_INITKONST;
+    for (int i = 0; i < SHANNON_N; i++) {
+        s->R[SHANNON_KEYP] ^= s->CRC[i];
+        shannon_cycle(s);
+    }
+    /* Extract 4-byte MAC from current sbuf */
+    WORD2BYTE(s->sbuf, mac);
 }
 
 /* ================================================================== */
